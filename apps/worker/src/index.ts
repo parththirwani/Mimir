@@ -1,5 +1,5 @@
-import { getConfig, version } from "@mimir/backend-core";
+import { getConfig, getLogger, version } from "@mimir/backend-core";
 
 getConfig();
 
-console.log(`@mimir/worker ready (backend-core v${version})`);
+getLogger().info({ version }, "@mimir/worker ready");

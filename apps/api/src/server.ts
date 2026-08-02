@@ -1,7 +1,10 @@
+import { getConfig, getLogger, getPrismaClient, runWithContext, tracer } from "@mimir/backend-core";
+import { context, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import express from "express";
 import { Redis } from "ioredis";
-import { getConfig, getPrismaClient } from "@mimir/backend-core";
+import { setupExpressErrorHandler } from "@sentry/node";
 
 const config = getConfig();
 const app = express();
@@ -11,8 +14,28 @@ let redisErrorLogged = false;
 redis.on("error", (e) => {
   if (!redisErrorLogged) {
     redisErrorLogged = true;
-    console.error(`[redis] connection error: ${e.message}`);
+    getLogger().error({ err: e }, "redis connection error");
   }
+});
+
+app.use((req, res, next) => {
+  const requestId = (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
+  res.setHeader("x-request-id", requestId);
+  const span = tracer.startSpan(`http ${req.method} ${req.path}`, {
+    kind: SpanKind.SERVER,
+    attributes: {
+      "http.request.method": req.method,
+      "url.path": req.path,
+      "requestId": requestId,
+    },
+  });
+  res.on("finish", () => {
+    span.setAttribute("http.response.status_code", res.statusCode);
+    if (res.statusCode >= 500) span.setStatus({ code: SpanStatusCode.ERROR });
+    span.end();
+  });
+  res.on("close", () => span.end());
+  runWithContext({ requestId }, () => context.with(trace.setSpan(context.active(), span), next));
 });
 
 app.get("/health", async (_req, res) => {
@@ -29,9 +52,12 @@ app.get("/health", async (_req, res) => {
     cache = "error";
   }
   const ok = db === "ok" && cache === "ok";
+  getLogger().info({ checks: { db, redis: cache } }, "health check");
   res.status(ok ? 200 : 503).json({ status: ok ? "ok" : "degraded", checks: { db, redis: cache } });
 });
 
+setupExpressErrorHandler(app);
+
 createServer(app).listen(config.PORT, () => {
-  console.log(`@mimir/api listening on :${config.PORT}`);
+  getLogger().info({ port: config.PORT }, "@mimir/api listening");
 });

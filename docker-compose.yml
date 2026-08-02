@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: mimir
       POSTGRES_DB: mimir
     ports:
-      - "5432:5432"
+      - "5434:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mimir"]
       interval: 5s

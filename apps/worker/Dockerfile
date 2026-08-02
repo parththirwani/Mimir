@@ -21,6 +21,7 @@ RUN bun install --frozen-lockfile
 FROM oven/bun:1-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+ENV OTEL_SERVICE_NAME=mimir-worker
 COPY --from=installer /app/ .
 USER bun
 CMD ["bun", "run", "apps/worker/src/index.ts"]

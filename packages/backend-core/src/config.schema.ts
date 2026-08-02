@@ -8,6 +8,10 @@ export const configSchema = z.object({
   OPENROUTER_API_KEY: z.string().min(1).optional(),
   NANGO_SECRET_KEY: z.string().min(1).optional(),
   SENTRY_DSN: z.string().min(1).optional(),
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().min(1).optional(),
+  OTEL_EXPORTER_OTLP_HEADERS: z.string().min(1).optional(),
+  OTEL_SERVICE_NAME: z.string().min(1).optional(),
+  NODE_ENV: z.string().min(1).optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

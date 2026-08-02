@@ -22,6 +22,7 @@ RUN bun install --frozen-lockfile
 FROM oven/bun:1-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+ENV OTEL_SERVICE_NAME=mimir-api
 COPY --from=installer /app/ .
 USER bun
 EXPOSE 4000

@@ -4,13 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun --hot src/server.ts",
+    "dev": "OTEL_SERVICE_NAME=mimir-api bun --hot --env-file=../../.env src/server.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0"
   },
   "dependencies": {
     "@mimir/backend-core": "workspace:*",
     "@mimir/shared-types": "workspace:*",
+    "@opentelemetry/api": "^1.9.1",
+    "@sentry/node": "^10.69.0",
     "express": "^5.2.1",
     "ioredis": "^6.0.0"
   },
