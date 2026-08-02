@@ -1,0 +1,12 @@
+{
+  "transport": {
+    "url": "https://openrouter.ai/api/v1/chat/completions",
+    "timeoutMs": 30000,
+    "maxAttempts": 2
+  },
+  "useCases": {
+    "chat_response": { "model": "~deepseek/deepseek-v4-flash-latest", "maxInputTokens": 8000, "maxOutputTokens": 2048, "temperature": 0.7 },
+    "classification": { "model": "~deepseek/deepseek-v4-flash-latest", "maxInputTokens": 4000, "maxOutputTokens": 512, "temperature": 0.1 },
+    "agent_execution": { "model": "~deepseek/deepseek-v4-flash-latest", "maxInputTokens": 8000, "maxOutputTokens": 2048, "temperature": 0.7 }
+  }
+}

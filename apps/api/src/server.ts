@@ -6,6 +6,7 @@ import express from "express";
 import passport from "passport";
 import { setupExpressErrorHandler } from "@sentry/node";
 import { authRouter } from "./auth.js";
+import { messageRouter } from "./message.js";
 import { redis } from "./redis.js";
 
 const config = getConfig();
@@ -33,8 +34,30 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json());
+
+app.use(express.json());
+
+// CORS for the static-export web app (different origin/port). Reflect only
+// known origins; always allow credentials (cookie-based auth).
+const allowedOrigins = new Set([config.WEB_APP_URL, "http://localhost:3000"].filter(Boolean));
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  }
+  if (req.method === "OPTIONS") {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
+
 app.use(passport.initialize());
 app.use("/api/v1/auth", authRouter);
+app.use("/api/v1", messageRouter);
 
 app.get("/health", async (_req, res) => {
   let db = "ok";

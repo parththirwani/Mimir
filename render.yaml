@@ -12,6 +12,9 @@ services:
     runtime: docker
     repo: https://github.com/parththirwani/Mimir.git
     dockerfilePath: ./apps/web/Dockerfile
+    envVars:
+      - key: NEXT_PUBLIC_API_BASE_URL
+        sync: false
 
   - type: web
     name: mimir-api
@@ -28,6 +31,12 @@ services:
         fromRedis:
           name: mimir-redis
           property: connectionString
+      - key: JWT_SECRET
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: WEB_APP_URL
+        sync: false
 
   - type: worker
     name: mimir-worker

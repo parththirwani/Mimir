@@ -166,6 +166,20 @@ authRouter.post("/refresh", async (req, res) => {
   res.json({ ok: true });
 });
 
+authRouter.post("/logout", async (req, res) => {
+  const token = parseCookies(req.headers.cookie).refresh_token;
+  if (token) {
+    const tokenHash = createHash("sha256").update(token).digest("hex");
+    await prisma.refreshToken.updateMany({
+      where: { tokenHash, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  }
+  res.clearCookie("access_token", { path: "/" });
+  res.clearCookie("refresh_token", { path: REFRESH_TOKEN_COOKIE_PATH });
+  res.json({ ok: true });
+});
+
 function googleConfigured(): boolean {
   return Boolean(cfg.GOOGLE_CLIENT_ID && cfg.GOOGLE_CLIENT_SECRET && cfg.GOOGLE_REDIRECT_URI);
 }

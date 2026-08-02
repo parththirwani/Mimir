@@ -17,3 +17,22 @@ export interface Conversation {
   title: string | null;
   messages: Message[];
 }
+
+export interface ChatUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface ChatResult {
+  content: string;
+  model: string;
+  usage: ChatUsage;
+}
+
+export type LlmMessageRole = "system" | "user" | "assistant";
+
+export interface LlmMessage {
+  role: LlmMessageRole;
+  content: string;
+}
