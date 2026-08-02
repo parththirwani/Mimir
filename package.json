@@ -1,14 +1,17 @@
 {
-  "name": "_scaffold",
+  "name": "mimir",
+  "version": "0.0.0",
   "private": true,
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
-    "check-types": "turbo run check-types"
+    "verify": "bun run scripts/verify-no-duplication.ts"
   },
   "devDependencies": {
+    "@types/node": "^22.15.3",
     "prettier": "^3.7.4",
     "turbo": "^2.10.8",
     "typescript": "5.9.2"

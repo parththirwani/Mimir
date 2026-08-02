@@ -1,0 +1,11 @@
+{
+  "name": "@mimir/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tauri desktop shell (Phase 9). Wraps the @mimir/web static export.",
+  "scripts": {
+    "build": "mkdir -p dist && touch dist/.placeholder && echo \"Tauri shell lands in Phase 9\"",
+    "typecheck": "echo \"no TypeScript entrypoints yet\" && exit 0",
+    "lint": "echo \"no lint rules yet\" && exit 0"
+  }
+}

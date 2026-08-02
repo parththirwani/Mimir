@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./packages/typescript-config/base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@mimir/agent-core": ["packages/agent-core/src/index.ts"],
+      "@mimir/shared-types": ["packages/shared-types/src/index.ts"],
+      "@mimir/ui": ["packages/ui/src/index.ts"]
+    }
+  },
+  "include": ["scripts"],
+  "exclude": ["node_modules"]
+}
