@@ -12,7 +12,7 @@ separate BullMQ worker, Postgres (Prisma), Redis, Turborepo monorepo, Render dep
 | `apps/api`              | `@mimir/api`         | Express + socket.io API (Phase 0.3, Phase 2)      |
 | `apps/worker`           | `@mimir/worker`      | BullMQ worker process (Phase 0.4, Phase 3)        |
 | `apps/desktop`          | `@mimir/desktop`     | Tauri shell stub (Phase 9)                        |
-| `packages/agent-core`   | `@mimir/agent-core`  | Prisma client, OpenRouter wrapper, config loader  |
+| `packages/backend-core`   | `@mimir/backend-core`  | Prisma client, OpenRouter wrapper, config loader  |
 | `packages/ui`           | `@mimir/ui`          | Shared chat components                            |
 | `packages/shared-types` | `@mimir/shared-types`| Shared domain types                               |
 | `packages/typescript-config` | `@mimir/typescript-config` | Shared tsconfig bases              |
@@ -30,7 +30,7 @@ bun run dev            # all apps/packages in dev mode
 bun run build          # build everything (web static export included)
 bun run typecheck      # tsc --noEmit across all workspaces
 bun run lint
-bun run verify         # assert api + worker share one @mimir/agent-core (no duplication)
+bun run verify         # assert api + worker share one @mimir/backend-core (no duplication)
 ```
 
 ## Docker

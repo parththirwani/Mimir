@@ -9,7 +9,7 @@
     "lint": "eslint . --max-warnings 0"
   },
   "dependencies": {
-    "@mimir/agent-core": "workspace:*",
+    "@mimir/backend-core": "workspace:*",
     "@mimir/shared-types": "workspace:*"
   },
   "devDependencies": {

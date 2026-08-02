@@ -1,3 +1,5 @@
-import { version } from "@mimir/agent-core";
+import { getConfig, version } from "@mimir/backend-core";
 
-console.log(`@mimir/worker placeholder booting (agent-core v${version})`);
+getConfig();
+
+console.log(`@mimir/worker ready (backend-core v${version})`);

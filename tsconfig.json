@@ -4,7 +4,7 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@mimir/agent-core": ["packages/agent-core/src/index.ts"],
+      "@mimir/backend-core": ["packages/backend-core/src/index.ts"],
       "@mimir/shared-types": ["packages/shared-types/src/index.ts"],
       "@mimir/ui": ["packages/ui/src/index.ts"]
     }

@@ -15,12 +15,12 @@ RUN bunx turbo prune @mimir/worker --docker
 FROM base AS installer
 COPY --from=prepare /app/out/json/ .
 COPY --from=prepare /app/out/bun.lock ./bun.lock
+COPY --from=prepare /app/out/full/ .
 RUN bun install --frozen-lockfile
 
 FROM oven/bun:1-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=installer /app/ .
-COPY --from=prepare /app/out/full/ .
 USER bun
 CMD ["bun", "run", "apps/worker/src/index.ts"]

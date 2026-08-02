@@ -9,12 +9,15 @@
     "lint": "eslint . --max-warnings 0"
   },
   "dependencies": {
-    "@mimir/agent-core": "workspace:*",
-    "@mimir/shared-types": "workspace:*"
+    "@mimir/backend-core": "workspace:*",
+    "@mimir/shared-types": "workspace:*",
+    "express": "^5.2.1",
+    "ioredis": "^6.0.0"
   },
   "devDependencies": {
     "@mimir/eslint-config": "workspace:*",
     "@mimir/typescript-config": "workspace:*",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.15.3",
     "eslint": "^9.39.1",
     "typescript": "5.9.2"

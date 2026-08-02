@@ -36,3 +36,7 @@ yarn-error.log*
 # Misc
 .DS_Store
 *.pem
+implementation-plan-final.md
+
+# Prisma generated client
+packages/backend-core/src/generated/
