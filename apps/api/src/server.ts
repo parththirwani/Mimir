@@ -3,20 +3,14 @@ import { context, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import express from "express";
-import { Redis } from "ioredis";
+import passport from "passport";
 import { setupExpressErrorHandler } from "@sentry/node";
+import { authRouter } from "./auth.js";
+import { redis } from "./redis.js";
 
 const config = getConfig();
 const app = express();
 const prisma = getPrismaClient();
-const redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: 1 });
-let redisErrorLogged = false;
-redis.on("error", (e) => {
-  if (!redisErrorLogged) {
-    redisErrorLogged = true;
-    getLogger().error({ err: e }, "redis connection error");
-  }
-});
 
 app.use((req, res, next) => {
   const requestId = (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
@@ -37,6 +31,10 @@ app.use((req, res, next) => {
   res.on("close", () => span.end());
   runWithContext({ requestId }, () => context.with(trace.setSpan(context.active(), span), next));
 });
+
+app.use(express.json());
+app.use(passport.initialize());
+app.use("/api/v1/auth", authRouter);
 
 app.get("/health", async (_req, res) => {
   let db = "ok";

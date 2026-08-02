@@ -12,9 +12,10 @@ separate BullMQ worker, Postgres (Prisma), Redis, Turborepo monorepo, Render dep
 | `apps/api`              | `@mimir/api`         | Express + socket.io API (Phase 0.3, Phase 2)      |
 | `apps/worker`           | `@mimir/worker`      | BullMQ worker process (Phase 0.4, Phase 3)        |
 | `apps/desktop`          | `@mimir/desktop`     | Tauri shell stub (Phase 9)                        |
-| `packages/backend-core`   | `@mimir/backend-core`  | Prisma client, OpenRouter wrapper, config loader  |
+| `packages/backend-core`   | `@mimir/backend-core`  | Prisma client, OpenRouter wrapper, config loader, constants |
 | `packages/ui`           | `@mimir/ui`          | Shared chat components                            |
 | `packages/shared-types` | `@mimir/shared-types`| Shared domain types                               |
+| `packages/zod-schemas`  | `@mimir/zod-schemas` | Zod validation schemas (see `docs/zod-schemas.md`) |
 | `packages/typescript-config` | `@mimir/typescript-config` | Shared tsconfig bases              |
 | `packages/eslint-config`| `@mimir/eslint-config`| Shared ESLint flat configs                        |
 

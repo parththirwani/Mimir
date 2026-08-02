@@ -6,21 +6,30 @@
   "scripts": {
     "dev": "OTEL_SERVICE_NAME=mimir-api bun --hot --env-file=../../.env src/server.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint . --max-warnings 0"
+    "lint": "eslint . --max-warnings 0",
+    "test": "bun test"
   },
   "dependencies": {
     "@mimir/backend-core": "workspace:*",
     "@mimir/shared-types": "workspace:*",
+    "@mimir/zod-schemas": "workspace:*",
     "@opentelemetry/api": "^1.9.1",
     "@sentry/node": "^10.69.0",
     "express": "^5.2.1",
-    "ioredis": "^6.0.0"
+    "ioredis": "^6.0.0",
+    "jose": "^6.2.7",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@mimir/eslint-config": "workspace:*",
     "@mimir/typescript-config": "workspace:*",
+    "@types/bun": "^1.3.14",
     "@types/express": "^5.0.6",
     "@types/node": "^22.15.3",
+    "@types/passport": "^1.0.17",
+    "@types/passport-google-oauth20": "^2.0.17",
     "eslint": "^9.39.1",
     "typescript": "5.9.2"
   }

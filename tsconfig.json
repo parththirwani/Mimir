@@ -3,6 +3,7 @@
   "extends": "./packages/typescript-config/base.json",
   "compilerOptions": {
     "baseUrl": ".",
+    "types": ["bun", "node"],
     "paths": {
       "@mimir/backend-core": ["packages/backend-core/src/index.ts"],
       "@mimir/shared-types": ["packages/shared-types/src/index.ts"],

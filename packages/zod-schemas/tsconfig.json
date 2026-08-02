@@ -1,8 +1,7 @@
 {
   "extends": "@mimir/typescript-config/base.json",
   "compilerOptions": {
-    "strictNullChecks": true,
-    "types": ["bun", "node"]
+    "strictNullChecks": true
   },
   "include": ["src"],
   "exclude": ["node_modules"]
