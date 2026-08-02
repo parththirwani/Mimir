@@ -7,3 +7,154 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+enum MessageRole {
+  user
+  assistant
+  system
+}
+
+enum MessageStatus {
+  pending
+  streaming
+  complete
+  failed
+}
+
+enum AgentStatus {
+  active
+  dormant
+  archived
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String?
+  googleId     String?  @unique
+  createdAt    DateTime @default(now())
+
+  conversations Conversation[]
+  agents        Agent[]
+  connections   IntegrationConnection[]
+  refreshTokens RefreshToken[]
+  usage         UsageRecord[]
+  pushSubscriptions PushSubscription[]
+}
+
+// NOTE: "User" also has a CHECK constraint — ("passwordHash" IS NOT NULL) OR ("googleId" IS NOT NULL) —
+// added by hand in the init migration (Prisma 7 can't express it). Re-apply it if this migration is ever regenerated.
+
+model Conversation {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  createdAt DateTime  @default(now())
+  messages  Message[]
+
+  @@index([userId])
+}
+
+model Message {
+  id              String        @id @default(uuid())
+  conversationId  String
+  conversation    Conversation  @relation(fields: [conversationId], references: [id])
+  clientMessageId String?
+  role            MessageRole
+  content         String        @db.Text
+  status          MessageStatus @default(complete)
+  toolCalls       Json?
+  attachments     Json?
+  parentMessageId String?
+  model           String?
+  tokenCount      Int?
+  errorDetail     Json?
+  createdAt       DateTime      @default(now())
+  editedAt        DateTime?
+
+  @@unique([conversationId, clientMessageId])
+  @@index([conversationId, createdAt])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  tokenHash String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Agent {
+  id                  String      @id @default(uuid())
+  userId              String
+  user                User        @relation(fields: [userId], references: [id])
+  ownerConversationId String
+  taskDescription     String      @db.Text
+  entity              String?
+  status              AgentStatus @default(active)
+  embedding           Unsupported("vector(1536)")? // needs CREATE EXTENSION vector (hand-added to init migration); client access via $queryRaw only
+  lastActiveAt        DateTime    @default(now())
+  createdAt           DateTime    @default(now())
+  events              AgentEvent[]
+
+  @@index([userId, status])
+}
+
+model AgentEvent {
+  id        String   @id @default(uuid())
+  agentId   String
+  agent     Agent    @relation(fields: [agentId], references: [id])
+  eventType String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  @@index([agentId, createdAt])
+}
+
+model IntegrationConnection {
+  id                 String   @id @default(uuid())
+  userId             String
+  user               User     @relation(fields: [userId], references: [id])
+  provider           String
+  nangoConnectionId  String   @unique
+  status             String
+  createdAt          DateTime @default(now())
+
+  @@index([userId, provider])
+}
+
+model WebhookEvent {
+  id          String    @id @default(uuid())
+  provider    String
+  externalId  String
+  rawPayload  Json
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@unique([provider, externalId])
+}
+
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  endpoint  String   @unique
+  keys      Json
+  platform  String
+  createdAt DateTime @default(now())
+}
+
+model UsageRecord {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  date       DateTime @db.Date
+  tokensUsed Int      @default(0)
+  costCents  Int      @default(0)
+
+  @@unique([userId, date])
+}
