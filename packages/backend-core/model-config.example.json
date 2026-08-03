@@ -8,7 +8,9 @@
     "chat_response": { "model": "~deepseek/deepseek-v4-flash-latest", "maxInputTokens": 8000, "maxOutputTokens": 2048, "temperature": 0.7 },
     "classification": { "model": "~deepseek/deepseek-v4-flash-latest", "maxInputTokens": 4000, "maxOutputTokens": 512, "temperature": 0.1 },
     "agent_execution": { "model": "~deepseek/deepseek-v4-flash-latest", "maxInputTokens": 8000, "maxOutputTokens": 2048, "temperature": 0.7 },
-    "agent_filter": { "model": "~deepseek/deepseek-v4-flash-latest", "maxInputTokens": 4000, "maxOutputTokens": 256, "temperature": 0.1 }
+    "agent_filter": { "model": "~deepseek/deepseek-v4-flash-latest", "maxInputTokens": 4000, "maxOutputTokens": 256, "temperature": 0.1 },
+    "email_proposal": { "model": "~deepseek/deepseek-v4-flash-latest", "maxInputTokens": 4000, "maxOutputTokens": 1024, "temperature": 0.2 },
+    "email_resolve": { "model": "~deepseek/deepseek-v4-flash-latest", "maxInputTokens": 4000, "maxOutputTokens": 128, "temperature": 0.1 }
   },
   "embeddings": { "model": "openai/text-embedding-3-small" }
 }

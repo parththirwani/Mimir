@@ -3,6 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 
+interface EmailToolCall {
+  type?: string;
+  status?: string;
+  draft?: { to?: string; subject?: string; body?: string };
+}
+
 interface ChatMessage {
   id: string;
   conversationId: string;
@@ -13,6 +19,7 @@ interface ChatMessage {
   completionTokens?: number | null;
   totalTokens?: number | null;
   durationMs?: number | null;
+  toolCalls?: EmailToolCall | null;
 }
 
 import { io } from "socket.io-client";
@@ -34,6 +41,7 @@ export default function Home() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
+  const [gmailConnected, setGmailConnected] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -49,6 +57,44 @@ export default function Home() {
       setView("chat");
     })();
   }, []);
+
+  // Status probe that also heals: GET /integrations/gmail reconciles a Nango
+  // connection that has no local row (Connect UI has no success redirect). Retried
+  // ~3x to absorb the small lag between Nango persisting the connection and
+  // listConnections seeing it. Errors are ignored — a failed probe just hides the link.
+  const refreshGmailStatus = async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const r = await fetch(`${API}/integrations/gmail`, { credentials: "include" }).catch(() => null);
+      if (r && r.ok) {
+        const d = (await r.json()) as { connected: boolean };
+        setGmailConnected(d.connected);
+        if (d.connected) return;
+      }
+      await new Promise((res) => setTimeout(res, 500));
+    }
+  };
+
+  useEffect(() => {
+    if (view !== "chat") return;
+    refreshGmailStatus();
+  }, [view]);
+
+  const connectGmail = async () => {
+    setError(null);
+    const res = await fetch(`${API}/integrations/gmail/connect`, { credentials: "include" });
+    if (!res.ok) {
+      setError("Couldn't start Gmail connect — try again");
+      return;
+    }
+    const { sessionToken } = (await res.json()) as { sessionToken: string };
+    const { default: Nango } = await import("@nangohq/frontend"); // lazy — keeps the bundle small
+    new Nango({ connectSessionToken: sessionToken }).openConnectUI({
+      onEvent: (event) => {
+        if (event.type === "connect") refreshGmailStatus();
+        if (event.type === "error") setError(event.payload.errorMessage);
+      },
+    });
+  };
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -134,54 +180,57 @@ export default function Home() {
   setMessages([]);
 };
 
-const send = async (e: React.FormEvent) => {
-  e.preventDefault();
-  const content = input.trim();
-    if (!content || sending || !conversationId) return;
-    setInput("");
-    setSending(true);
-    setError(null);
-    const clientMessageId = crypto.randomUUID();
-    const optimistic: ChatMessage = {
-      id: clientMessageId,
-      conversationId,
-      role: "user",
-      content,
-      createdAt: new Date().toISOString(),
-    };
-    setMessages((m) => [...m, optimistic]);
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const res = await fetch(`${API}/message`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId, content, clientMessageId }),
-      });
-      if (res.status === 401) {
-        setView("login");
-        return;
+const post = async (content: string) => {
+  if (!content || sending || !conversationId) return;
+  setInput("");
+  setSending(true);
+  setError(null);
+  const clientMessageId = crypto.randomUUID();
+  const optimistic: ChatMessage = {
+    id: clientMessageId,
+    conversationId,
+    role: "user",
+    content,
+    createdAt: new Date().toISOString(),
+  };
+  setMessages((m) => [...m, optimistic]);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await fetch(`${API}/message`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversationId, content, clientMessageId }),
+    });
+    if (res.status === 401) {
+      setView("login");
+      return;
+    }
+    if (res.ok) {
+      // Refetch the whole thread so toolCall statuses (pending/executed/cancelled)
+      // stay truthful — an executed/cancelled draft must drop its buttons.
+      const data = (await fetch(`${API}/conversation`, { credentials: "include" }).then((r) =>
+        r.ok ? (r.json() as Promise<{ conversation: { id: string; messages: ChatMessage[] } }>) : null,
+      )) as { conversation: { id: string; messages: ChatMessage[] } } | null;
+      if (data) {
+        setConversationId(data.conversation.id);
+        setMessages(data.conversation.messages);
       }
-      if (res.ok) {
-        const data = (await res.json()) as { message: ChatMessage; usage?: { promptTokens?: number } };
-        setRevealed(0);
-        setMessages((m) => [
-          ...m.map((msg) =>
-            msg.id === clientMessageId && data.usage?.promptTokens != null
-              ? { ...msg, promptTokens: data.usage.promptTokens }
-              : msg,
-          ),
-          data.message,
-        ]);
-        setSending(false);
-        return;
-      }
-      const body = (await res.json()) as { error?: { message?: string } };
-      if (attempt === 0 && res.status >= 500) continue; // retry same idempotency key
-      setError(body.error?.message ?? "Request failed");
+      setRevealed(0);
       setSending(false);
       return;
     }
-  };
+    const body = (await res.json()) as { error?: { message?: string } };
+    if (attempt === 0 && res.status >= 500) continue; // retry same idempotency key
+    setError(body.error?.message ?? "Request failed");
+    setSending(false);
+    return;
+  }
+};
+
+const send = async (e: React.FormEvent) => {
+  e.preventDefault();
+  await post(input.trim());
+};
 
   if (view === "loading") return <main style={styles.center}><p>Loading…</p></main>;
 
@@ -212,7 +261,12 @@ const send = async (e: React.FormEvent) => {
   return (
     <main style={styles.fill}>
       <div style={styles.thread}>
-        <header style={{ display: "flex", justifyContent: "flex-end", marginBottom: 4 }}>
+        <header style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 4 }}>
+          {!gmailConnected && (
+            <button style={{ ...styles.button, fontSize: 12 }} type="button" onClick={connectGmail}>
+              Connect Gmail
+            </button>
+          )}
           <button style={{ ...styles.button, fontSize: 12 }} type="button" onClick={logout}>Log out</button>
         </header>
         {messages.map((m, i) => {
@@ -224,9 +278,16 @@ const send = async (e: React.FormEvent) => {
               : m.promptTokens != null
                 ? `[${m.promptTokens} in]`
                 : "";
+          const pendingAction = m.toolCalls?.type === "gmail.send_email" && m.toolCalls.status === "pending";
           return (
             <div key={m.id} style={{ ...styles.bubble, alignSelf: m.role === "user" ? "flex-end" : "flex-start" }}>
               {shown || (m.role === "assistant" && sending ? "…" : "")}
+              {pendingAction && (
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <button style={styles.button} type="button" disabled={sending} onClick={() => post("send")}>Send</button>
+                  <button style={styles.button} type="button" disabled={sending} onClick={() => post("cancel")}>Cancel</button>
+                </div>
+              )}
               <div style={styles.meta}>{meta}</div>
             </div>
           );

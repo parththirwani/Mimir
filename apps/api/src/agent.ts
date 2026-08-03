@@ -113,6 +113,7 @@ export async function spawnAgent(opts: {
   ownerConversationId: string;
   taskDescription: string;
   embedding: number[];
+  context?: string;
 }): Promise<{ agentId: string }> {
   const vec = `[${opts.embedding.join(",")}]`;
   const agentId = await prisma.$transaction(async (tx) => {
@@ -129,7 +130,7 @@ export async function spawnAgent(opts: {
     await tx.outboxEvent.create({
       data: {
         eventType: "spawn_agent",
-        payload: { agentId: agent.id, trigger: "user_message" },
+        payload: { agentId: agent.id, trigger: "user_message", context: opts.context },
       },
     });
     return agent.id;

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@mimir/backend-core": "workspace:*",
+    "@mimir/connection-provider": "workspace:*",
     "@mimir/shared-types": "workspace:*",
     "@mimir/zod-schemas": "workspace:*",
     "@opentelemetry/api": "^1.9.1",

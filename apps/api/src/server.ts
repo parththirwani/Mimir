@@ -6,6 +6,7 @@ import express from "express";
 import passport from "passport";
 import { setupExpressErrorHandler } from "@sentry/node";
 import { authRouter } from "./auth.js";
+import { integrationsRouter } from "./integrations.js";
 import { messageRouter } from "./message.js";
 import { redis } from "./redis.js";
 import { initPubSub, initSocket } from "./socket.js";
@@ -59,6 +60,7 @@ app.use((req, res, next) => {
 
 app.use(passport.initialize());
 app.use("/api/v1/auth", authRouter);
+app.use("/api/v1", integrationsRouter);
 app.use("/api/v1", messageRouter);
 
 app.get("/health", async (_req, res) => {

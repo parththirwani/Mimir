@@ -13,6 +13,7 @@ separate BullMQ worker, Postgres (Prisma), Redis, Turborepo monorepo, Render dep
 | `apps/worker`           | `@mimir/worker`      | BullMQ worker process (Phase 0.4, Phase 3)        |
 | `apps/desktop`          | `@mimir/desktop`     | Tauri shell stub (Phase 9)                        |
 | `packages/backend-core`   | `@mimir/backend-core`  | Prisma client, OpenRouter wrapper, config loader, constants |
+| `packages/connection-provider` | `@mimir/connection-provider` | Nango OAuth for external integrations (Phase 5) |
 | `packages/ui`           | `@mimir/ui`          | Shared chat components                            |
 | `packages/shared-types` | `@mimir/shared-types`| Shared domain types                               |
 | `packages/zod-schemas`  | `@mimir/zod-schemas` | Zod validation schemas (see `docs/zod-schemas.md`) |

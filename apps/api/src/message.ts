@@ -8,9 +8,26 @@ import {
   rollDailyUsage,
 } from "@mimir/backend-core";
 import { messageSchema } from "@mimir/zod-schemas";
+import { ConnectionError } from "@mimir/connection-provider";
 import { Router } from "express";
 import { requireAuth } from "./auth.js";
 import { mapLLMError } from "./errors.js";
+import { GMAIL_INTEGRATION } from "@mimir/connection-provider";
+import {
+  EMAIL_ACTION_TYPE,
+  EMAIL_BODY_MAX,
+  EMAIL_SUBJECT_MAX,
+  EMAIL_TO_RE,
+  cancelPendingEmailActions,
+  createEmailDraft,
+  emailActionHint,
+  findPendingEmailAction,
+  markEmailAction,
+  markGmailExpired,
+  proposeEmailAction,
+  resolvePendingAction,
+  sendPendingEmail,
+} from "./email-action.js";
 import {
   classifyMessage,
   embedTask,
@@ -117,6 +134,67 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     }
   }
 
+  // A pending email draft forces resolution before any new work — send, cancel,
+  // or ask again. Deliberate: the draft stays pending until decided, and every
+  // message is intercepted in the meantime (buttons and typed replies both land
+  // here). No regex guessing on intent: the same structured-LLM pattern as the
+  // interaction-agent classification decides confirm/cancel/ambiguous/unrelated.
+  const pendingAction = await findPendingEmailAction(conversationId);
+  if (pendingAction) {
+    const intent = await resolvePendingAction(userId, content, pendingAction.draft);
+    let replyContent: string;
+    if (intent === "confirm") {
+      try {
+        const sentId = await sendPendingEmail(userId, pendingAction.draftId);
+        await markEmailAction(pendingAction.messageId, "executed", { sentMessageId: sentId });
+        await trackEvent(userId, "email_sent", {
+          conversationId,
+          draftId: pendingAction.draftId,
+          to: pendingAction.draft.to,
+          subject: pendingAction.draft.subject,
+        });
+        replyContent = `Sent to ${pendingAction.draft.to}: "${pendingAction.draft.subject}".`;
+      } catch (e) {
+        if (e instanceof ConnectionError) {
+          getLogger().warn({ err: e }, "email send blocked by expired gmail token");
+          await markGmailExpired(userId);
+          replyContent = "Your Gmail connection expired. Reconnect Gmail, then tell me to send the draft again.";
+        } else {
+          getLogger().error({ err: e }, "email send failed; draft kept pending");
+          replyContent = "The email couldn't be sent right now. It's still in your Gmail drafts — try again in a moment.";
+        }
+      }
+    } else if (intent === "cancel") {
+      await markEmailAction(pendingAction.messageId, "cancelled");
+      await trackEvent(userId, "email_cancelled", {
+        conversationId,
+        draftId: pendingAction.draftId,
+        to: pendingAction.draft.to,
+        subject: pendingAction.draft.subject,
+      });
+      replyContent = "Cancelled — the email stays in your Gmail drafts if you want to edit it there.";
+    } else if (intent === "ambiguous") {
+      replyContent = "Should I send the draft or cancel it? Reply **send** to send it, or **cancel** to keep it as a draft.";
+    } else {
+      replyContent = `There's a pending email draft to ${pendingAction.draft.to} ("${pendingAction.draft.subject}"). Resolve it first — reply **send** to send it, or **cancel** to keep it as a draft.`;
+    }
+    const reply = await prisma.message.create({
+      data: { conversationId, role: "assistant", content: replyContent, status: "complete", parentMessageId: userMsg.id },
+    });
+    res.status(200).json({
+      message: {
+        id: reply.id,
+        conversationId,
+        role: "assistant",
+        content: reply.content,
+        createdAt: reply.createdAt,
+      },
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      latencyMs: 0,
+    });
+    return;
+  }
+
   // Phase 4: Interaction Agent classifies the intent. spawn_agent delegates to an
   // execution agent (dedup -> outbox); answer_directly falls through to the chat flow.
   const classification = await classifyMessage(userId, content, await listActiveAgents(userId));
@@ -137,7 +215,7 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
         await prisma.outboxEvent.create({
           data: {
             eventType: "retarget_agent",
-            payload: { agentId: target.id, trigger: "user_message" },
+            payload: { agentId: target.id, trigger: "user_message", context: content },
           },
         });
         getLogger().info({ agentId: target.id, conversationId }, "existing agent retargeted via outbox");
@@ -188,6 +266,7 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
         ownerConversationId: conversationId,
         taskDescription: classification.taskDescription,
         embedding,
+        context: content,
       });
       await trackEvent(userId, "agent_spawned", { conversationId, agentId });
       getLogger().info({ agentId, conversationId }, "agent spawned via outbox");
@@ -219,6 +298,136 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     take: 50,
   });
   const messages = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+
+  // Phase 5.x: email write/send requests (interactive chat only — background
+  // agents stay watch-only). A cheap keyword gate guards the extra structured
+  // LLM call; a real send needs Gmail, so short-circuit to a connect prompt.
+  if (emailActionHint(content)) {
+    const gmailConnected = await prisma.integrationConnection.findFirst({ where: { userId, provider: GMAIL_INTEGRATION } });
+    if (!gmailConnected) {
+      const reply = await prisma.message.create({
+        data: {
+          conversationId,
+          role: "assistant",
+          content: "Connect Gmail first, then I can write and send email for you.",
+          status: "complete",
+          parentMessageId: userMsg.id,
+        },
+      });
+      res.status(200).json({
+        message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        latencyMs: 0,
+      });
+      return;
+    }
+    const proposal = await proposeEmailAction(userId, [...messages, { role: "user", content }]);
+    if (proposal.intent === "send_email") {
+      if (!EMAIL_TO_RE.test(proposal.to) || !proposal.subject || !proposal.body) {
+        const reply = await prisma.message.create({
+          data: {
+            conversationId,
+            role: "assistant",
+            content: "I need a recipient email address and the full message to draft that for you. Could you tell me who to send it to and what to say?",
+            status: "complete",
+            parentMessageId: userMsg.id,
+          },
+        });
+        res.status(200).json({
+          message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          latencyMs: 0,
+        });
+        return;
+      }
+      if (proposal.subject.length > EMAIL_SUBJECT_MAX || proposal.body.length > EMAIL_BODY_MAX) {
+        const reply = await prisma.message.create({
+          data: {
+            conversationId,
+            role: "assistant",
+            content: "That draft is too long to send. Could you shorten it and ask again?",
+            status: "complete",
+            parentMessageId: userMsg.id,
+          },
+        });
+        res.status(200).json({
+          message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          latencyMs: 0,
+        });
+        return;
+      }
+      await cancelPendingEmailActions(conversationId);
+      let draft: { draftId: string; messageId: string };
+      try {
+        draft = await createEmailDraft(userId, { to: proposal.to, subject: proposal.subject, body: proposal.body });
+      } catch (e) {
+        if (e instanceof ConnectionError) {
+          getLogger().warn({ err: e }, "email draft blocked by expired gmail token");
+          await markGmailExpired(userId);
+          const reply = await prisma.message.create({
+            data: {
+              conversationId,
+              role: "assistant",
+              content: "Your Gmail connection expired. Reconnect Gmail, then ask me to draft that again.",
+              status: "complete",
+              parentMessageId: userMsg.id,
+            },
+          });
+          res.status(200).json({
+            message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            latencyMs: 0,
+          });
+          return;
+        }
+        getLogger().error({ err: e }, "gmail draft creation failed");
+        const reply = await prisma.message.create({
+          data: {
+            conversationId,
+            role: "assistant",
+            content: "I couldn't create that draft in Gmail right now. Try again in a moment.",
+            status: "complete",
+            parentMessageId: userMsg.id,
+          },
+        });
+        res.status(200).json({
+          message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          latencyMs: 0,
+        });
+        return;
+      }
+      const draftText = `To: ${proposal.to}\nSubject: ${proposal.subject}\n\n${proposal.body}`;
+      await trackEvent(userId, "email_draft_proposed", {
+        conversationId,
+        draftId: draft.draftId,
+        to: proposal.to,
+        subject: proposal.subject,
+      });
+      const reply = await prisma.message.create({
+        data: {
+          conversationId,
+          role: "assistant",
+          content: `Here's the draft I'll send:\n\n${draftText}\n\nReply **send** to send it, or **cancel** to keep it as a draft.`,
+          status: "complete",
+          parentMessageId: userMsg.id,
+          toolCalls: {
+            type: EMAIL_ACTION_TYPE,
+            status: "pending",
+            draftId: draft.draftId,
+            draft: { to: proposal.to, subject: proposal.subject, body: proposal.body },
+          },
+        },
+      });
+      res.status(200).json({
+        message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        latencyMs: 0,
+      });
+      return;
+    }
+  }
 
   let result;
   try {
@@ -317,6 +526,7 @@ messageRouter.get("/conversation", requireAuth, async (req, res) => {
       completionTokens: m.completionTokens,
       totalTokens: m.tokenCount,
       durationMs: m.durationMs,
+      toolCalls: m.toolCalls ?? null,
     })) },
   });
 });

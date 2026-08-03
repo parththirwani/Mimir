@@ -1,25 +1,24 @@
 {
-  "name": "@mimir/worker",
+  "name": "@mimir/connection-provider",
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
   "scripts": {
-    "dev": "OTEL_SERVICE_NAME=mimir-worker bun --hot --env-file=../../.env src/index.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
     "test": "bun test"
   },
   "dependencies": {
-    "@mimir/backend-core": "workspace:*",
-    "@mimir/connection-provider": "workspace:*",
-    "@mimir/shared-types": "workspace:*",
-    "bullmq": "^6.0.6",
-    "ioredis": "^6.0.0"
+    "@nangohq/node": "^0.71.3"
   },
   "devDependencies": {
+    "@mimir/backend-core": "workspace:*",
     "@mimir/eslint-config": "workspace:*",
     "@mimir/typescript-config": "workspace:*",
-    "@types/node": "^22.15.3",
     "eslint": "^9.39.1",
     "typescript": "5.9.2"
   }

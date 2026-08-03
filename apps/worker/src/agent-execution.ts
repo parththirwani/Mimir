@@ -9,8 +9,9 @@ import {
   rollDailyUsage,
 } from "@mimir/backend-core";
 import type { LlmMessage } from "@mimir/shared-types";
+import { ConnectionError, GMAIL_INTEGRATION } from "@mimir/connection-provider";
 import type { Job } from "bullmq";
-import { fetchEntityData } from "./mock-integration.js";
+import { fetchEntityData } from "./gmail.js";
 import { publishUserEvent } from "./redis.js";
 
 const prisma = getPrismaClient();
@@ -18,7 +19,7 @@ const prisma = getPrismaClient();
 // Plan 4.5.1: context = contextSummary (if set) + last N AgentEvents, capped at
 // AGENT_CONTEXT_MAX_TOKENS. Rough token estimate (chars / 4) — good enough for a
 // budget cap; exact tokenizer is unnecessary until the cap measurably bites.
-async function loadContext(agentId: string): Promise<{ systemNote: string; history: LlmMessage[] }> {
+async function loadContext(agentId: string, context?: string): Promise<{ systemNote: string; history: LlmMessage[] }> {
   const agent = await prisma.agent.findUnique({ where: { id: agentId } });
   if (!agent) throw new Error(`agent ${agentId} not found`);
 
@@ -40,8 +41,10 @@ async function loadContext(agentId: string): Promise<{ systemNote: string; histo
 
   const systemNote = [
     `You are an execution agent. Task: ${agent.taskDescription}`,
+    context ? `The user's latest message to address: ${context}` : "",
     agent.contextSummary ? `Prior summary of this agent's activity:\n${agent.contextSummary}` : "",
     "You receive event history and current integration data. Produce a concise, useful result for the user.",
+    "Report ONLY facts present in the provided integration data and event history. If a requested detail (amount, date, name, count, link, status) is not present in the data, say explicitly that it is not available — never guess, infer, or fabricate it.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -112,6 +115,13 @@ interface FilterVerdict {
   category: "actionable" | "fyi" | "noise";
 }
 
+// A direct user request is always surfaced — the user asked, so the answer is
+// never spam. The noise filter only gates background/triggered runs (scheduled
+// polls, webhooks), which can otherwise spam without a human in the loop.
+export function userTriggered(trigger: string | undefined): boolean {
+  return trigger === "user_message";
+}
+
 export async function filterVerdict(userId: string, content: string): Promise<FilterVerdict> {
   const messages: LlmMessage[] = [
     {
@@ -146,7 +156,7 @@ export async function filterVerdict(userId: string, content: string): Promise<Fi
 // Plan 4.5.2-4.6: the real agent-jobs processor. Postgres writes (AgentEvent +
 // Message) complete BEFORE any publish — no publish-before-write.
 export async function executeAgent(job: Job): Promise<void> {
-  const { agentId } = job.data as { agentId: string; trigger?: string };
+  const { agentId, trigger, context } = job.data as { agentId: string; trigger?: string; context?: string };
   getLogger().info({ agentId, jobId: job.id }, "agent job started");
 
   const agent = await prisma.agent.findUnique({ where: { id: agentId } });
@@ -155,8 +165,49 @@ export async function executeAgent(job: Job): Promise<void> {
     return;
   }
 
-  const { systemNote, history } = await loadContext(agentId);
-  const data = await fetchEntityData(agent.entity, agent.taskDescription);
+  const { systemNote, history } = await loadContext(agentId, context);
+
+  // Plan 5 Task D: real integration fetch. ConnectionError fails fast to a
+  // surfaced reconnect message (no silent retry loop); ProviderError and
+  // anything else rethrow into BullMQ's attempts:5 exponential backoff.
+  let data: unknown;
+  try {
+    data = await fetchEntityData(agent.userId, agent.entity, agent.taskDescription);
+  } catch (e) {
+    if (!(e instanceof ConnectionError)) throw e;
+    getLogger().warn({ agentId, err: e }, "integration not usable; surfacing reconnect");
+    // ponytail: plan 5.4.1's per-kind retry counts ("retry 3x / retry once then
+    // surface") aren't expressible in BullMQ's fixed per-job attempt count; the
+    // uniform 5x policy plus this ConnectionError fail-fast covers it. Split into
+    // per-kind policies only if a provider starts burning retries.
+    await prisma.integrationConnection.updateMany({
+      where: { userId: agent.userId, provider: GMAIL_INTEGRATION },
+      data: { status: "expired" },
+    });
+    const content = "Connect Gmail to let me watch your email.";
+    await prisma.agentEvent.create({
+      data: {
+        agentId,
+        eventType: "surfaced",
+        payload: { content, rationale: "gmail connection unavailable", category: "actionable", reconnect: true },
+      },
+    });
+    const message = await prisma.message.create({
+      data: {
+        conversationId: agent.ownerConversationId,
+        role: "assistant",
+        content,
+        status: "complete",
+      },
+    });
+    try {
+      await publishUserEvent(agent.userId, "new_message", { conversationId: agent.ownerConversationId, messageId: message.id });
+    } catch (publishErr) {
+      getLogger().error({ err: publishErr, agentId }, "publish failed (reconnect message already written)");
+    }
+    await safeFold(agentId);
+    return;
+  }
 
   const llmMessages: LlmMessage[] = [
     { role: "system", content: systemNote },
@@ -170,7 +221,9 @@ export async function executeAgent(job: Job): Promise<void> {
   await prisma.agent.update({ where: { id: agentId }, data: { lastActiveAt: new Date() } });
 
   // Plan 4.7.2: the discard path is never skipped — write surfaced OR discarded.
-  const verdict = await filterVerdict(agent.userId, result.content);
+  const verdict = userTriggered(trigger)
+    ? { surface: true, rationale: "user-triggered", category: "actionable" as const }
+    : await filterVerdict(agent.userId, result.content);
   const eventType = verdict.surface ? "surfaced" : "discarded";
   await prisma.agentEvent.create({
     data: {
