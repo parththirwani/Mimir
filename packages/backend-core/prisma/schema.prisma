@@ -34,16 +34,15 @@ model User {
   googleId     String?  @unique
   createdAt    DateTime @default(now())
 
-  conversations Conversation[]
-  agents        Agent[]
-  connections   IntegrationConnection[]
-  refreshTokens RefreshToken[]
-  usage         UsageRecord[]
+  conversations     Conversation[]
+  agents            Agent[]
+  connections       IntegrationConnection[]
+  refreshTokens     RefreshToken[]
+  usage             UsageRecord[]
   pushSubscriptions PushSubscription[]
+  analyticsEvents   AnalyticsEvent[]
+  modelCallLogs     ModelCallLog[]
 }
-
-// NOTE: "User" also has a CHECK constraint — ("passwordHash" IS NOT NULL) OR ("googleId" IS NOT NULL) —
-// added by hand in the init migration (Prisma 7 can't express it). Re-apply it if this migration is ever regenerated.
 
 model Conversation {
   id        String    @id @default(uuid())
@@ -51,39 +50,53 @@ model Conversation {
   user      User      @relation(fields: [userId], references: [id])
   createdAt DateTime  @default(now())
   messages  Message[]
+  summaries ConversationSummary[]
 
   @@index([userId])
 }
 
 model Message {
-  id              String        @id @default(uuid())
-  conversationId  String
-  conversation    Conversation  @relation(fields: [conversationId], references: [id])
-  clientMessageId String?
-  role            MessageRole
-  content         String        @db.Text
-  status          MessageStatus @default(complete)
-  toolCalls       Json?
-  attachments     Json?
-  parentMessageId String?
-  model           String?
-  tokenCount      Int?
-  errorDetail     Json?
-  createdAt       DateTime      @default(now())
-  editedAt        DateTime?
+  id               String        @id @default(uuid())
+  conversationId   String
+  conversation     Conversation  @relation(fields: [conversationId], references: [id])
+  clientMessageId  String?
+  role             MessageRole
+  content          String        @db.Text
+  status           MessageStatus @default(complete)
+  toolCalls        Json?
+  attachments      Json?
+  parentMessageId  String?
+  model            String?
+  tokenCount       Int?
+  promptTokens     Int?
+  completionTokens Int?
+  durationMs       Int?
+  errorDetail      Json?
+  createdAt        DateTime      @default(now())
+  editedAt         DateTime?
 
   @@unique([conversationId, clientMessageId])
   @@index([conversationId, createdAt])
 }
+model ConversationSummary {
+  id                 String       @id @default(uuid())
+  conversationId     String
+  conversation       Conversation @relation(fields: [conversationId], references: [id])
+  summaryText        String       @db.Text
+  coversMessagesUpTo DateTime
+  createdAt          DateTime     @default(now())
+
+  @@index([conversationId])
+}
 
 model RefreshToken {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  tokenHash String   @unique
+  user      User      @relation(fields: [userId], references: [id])
+  tokenHash String    @unique
   expiresAt DateTime
   revokedAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   @@index([userId])
 }
@@ -97,6 +110,7 @@ model Agent {
   entity              String?
   status              AgentStatus @default(active)
   embedding           Unsupported("vector(1536)")? // needs CREATE EXTENSION vector (hand-added to init migration); client access via $queryRaw only
+  contextSummary      String?     @db.Text // folded-in summary of older AgentEvents once the per-agent context budget (40 events / 8k tokens) is exceeded
   lastActiveAt        DateTime    @default(now())
   createdAt           DateTime    @default(now())
   events              AgentEvent[]
@@ -114,15 +128,24 @@ model AgentEvent {
 
   @@index([agentId, createdAt])
 }
+model OutboxEvent {
+  id          String    @id @default(uuid())
+  eventType   String
+  payload     Json
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([processedAt])
+}
 
 model IntegrationConnection {
-  id                 String   @id @default(uuid())
-  userId             String
-  user               User     @relation(fields: [userId], references: [id])
-  provider           String
-  nangoConnectionId  String   @unique
-  status             String
-  createdAt          DateTime @default(now())
+  id                String   @id @default(uuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id])
+  provider          String
+  nangoConnectionId String   @unique
+  status            String
+  createdAt         DateTime @default(now())
 
   @@index([userId, provider])
 }
@@ -154,7 +177,39 @@ model UsageRecord {
   user       User     @relation(fields: [userId], references: [id])
   date       DateTime @db.Date
   tokensUsed Int      @default(0)
-  costCents  Int      @default(0)
 
   @@unique([userId, date])
+}
+model AnalyticsEvent {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  eventType  String
+  properties Json?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([eventType, createdAt])
+}
+
+model ModelCallLog {
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id])
+  useCase        String   // "chat_response" | "classification" | "agent_execution" | "summarization" | "embeddings"
+  model          String   // model requested per model-config.json
+  actualModel    String?  // model that actually served the request (response.model) — differs from `model` when the fallback chain triggered
+  tokensUsed     Int      // total_tokens
+  promptTokens   Int?
+  completionTokens Int?
+  cachedTokens   Int?     // usage.prompt_tokens_details.cached_tokens — prompt-cache hit signal
+  finishReason   String?  // normalized finish_reason ("stop" | "length" | "content_filter" | "tool_calls" | "error")
+  generationId   String?  // OpenRouter's response id — lets you query /api/v1/generation later for provider-level audit detail
+  costCents      Int
+  latencyMs      Int
+  success        Boolean
+  createdAt      DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([model, createdAt])
 }

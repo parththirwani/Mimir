@@ -87,12 +87,13 @@ export async function callOpenRouter(
   const temperature = options.temperature ?? cfg.temperature;
   const maxTokens = options.maxTokens ?? cfg.maxOutputTokens;
   const span = tracer.startSpan("openrouter chat.completions", { attributes: { "llm.model": model } });
+  const startedAt = Date.now();
 
   try {
     const result = await attempt(messages, { model, temperature, maxTokens });
     span.setAttribute("llm.result.completion_tokens", result.usage.completionTokens);
     span.setAttribute("llm.result.prompt_tokens", result.usage.promptTokens);
-    return result;
+    return { ...result, latencyMs: Date.now() - startedAt };
   } catch (e) {
     span.recordException(e as Error);
     span.setStatus({ code: SpanStatusCode.ERROR });
@@ -105,7 +106,7 @@ export async function callOpenRouter(
 async function attempt(
   messages: LlmMessage[],
   params: { model: string; temperature: number; maxTokens: number },
-): Promise<ChatResult> {
+) {
   const { maxAttempts } = loadConfig().transport;
   let lastError: unknown;
   for (let i = 0; i < maxAttempts; i++) {
@@ -123,7 +124,7 @@ async function attempt(
 async function singleCall(
   messages: LlmMessage[],
   params: { model: string; temperature: number; maxTokens: number },
-): Promise<ChatResult> {
+) {
   const { url, timeoutMs } = loadConfig().transport;
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
@@ -161,16 +162,42 @@ async function singleCall(
   if (typeof content !== "string") {
     throw new OpenRouterError("OpenRouter response missing content", 502, false);
   }
-  const usage = json as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } };
+  const usage = json as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } };
   const promptTokens = usage.usage?.prompt_tokens ?? 0;
   const completionTokens = usage.usage?.completion_tokens ?? 0;
+  const parsed = json as { id?: string; model?: string; choices?: [{ finish_reason?: string }] };
   return {
     content,
     model: params.model,
+    actualModel: parsed.model,
+    finishReason: parsed.choices?.[0]?.finish_reason,
+    cachedTokens: usage.usage?.prompt_tokens_details?.cached_tokens,
+    generationId: parsed.id,
     usage: {
       promptTokens,
       completionTokens,
       totalTokens: usage.usage?.total_tokens ?? promptTokens + completionTokens,
     },
   };
+}
+
+// ponytail: best-effort cost lookup; returns 0 on any failure. No retry —
+// callers call this fire-and-forget. Swap to the OutboxEvent table if drops matter.
+export async function fetchGenerationCost(generationId: string): Promise<number> {
+  const { url, timeoutMs } = loadConfig().transport;
+  const apiKey = getConfig().OPENROUTER_API_KEY;
+  if (!apiKey) return 0;
+  try {
+    const base = url.replace(/\/chat\/completions$/, "");
+    const res = await fetch(`${base}/generation?id=${generationId}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return 0;
+    const json = (await res.json()) as { data?: { total_cost?: number } };
+    const cost = json.data?.total_cost ?? 0;
+    return cost > 0 ? Math.round(cost * 100) : 0;
+  } catch {
+    return 0;
+  }
 }

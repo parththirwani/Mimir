@@ -9,5 +9,6 @@ export type { Config } from "./config.schema.js";
 export { getPrismaClient } from "./prisma.js";
 export { tracer } from "./observability.js";
 export { logger, getLogger, runWithContext } from "./logger.js";
-export { callOpenRouter, llmConfigFor, modelFor, NotConfiguredError, OpenRouterError } from "./openrouter.js";
+export { callOpenRouter, llmConfigFor, modelFor, fetchGenerationCost, NotConfiguredError, OpenRouterError } from "./openrouter.js";
 export type { LlmUseCaseConfig } from "./openrouter.js";
+export { trackEvent } from "./analytics.js";
