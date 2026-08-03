@@ -16,7 +16,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { NextFunction, Request, Response, Router } from "express";
 import passport from "passport";
 import { redis } from "./redis.js";
-import { generateRefreshToken, signAccessToken, verifyAccessToken } from "./tokens.js";
+import { generateRefreshToken, parseCookies, signAccessToken, verifyAccessToken } from "./tokens.js";
 import "./google-auth.js";
 
 /* eslint-disable @typescript-eslint/no-namespace -- Express Request augmentation requires it */
@@ -33,19 +33,6 @@ const cfg = getConfig();
 const prisma = getPrismaClient();
 
 export const authRouter: Router = Router();
-
-function parseCookies(header: string | undefined): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!header) return out;
-  for (const part of header.split(";")) {
-    const idx = part.indexOf("=");
-    if (idx === -1) continue;
-    const key = part.slice(0, idx).trim();
-    const value = part.slice(idx + 1).trim();
-    if (key) out[key] = decodeURIComponent(value);
-  }
-  return out;
-}
 
 function setAuthCookies(res: Response, accessToken: string, refreshToken: string): void {
   const secure = cfg.NODE_ENV === "production";

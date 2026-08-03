@@ -12,7 +12,9 @@ describe("access tokens", () => {
 
   test("rejects a tampered token", async () => {
     const token = await signAccessToken("user-1", SECRET);
-    const tampered = token.slice(0, -1) + (token.endsWith("a") ? "b" : "a");
+    const [header = "", payload = "", sig = ""] = token.split(".");
+    const flipped = payload.slice(0, -1) + (payload.endsWith("a") ? "b" : "a");
+    const tampered = `${header}.${flipped}.${sig}`;
     expect(await verifyAccessToken(tampered, SECRET)).toBeNull();
   });
 

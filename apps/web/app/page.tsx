@@ -15,7 +15,10 @@ interface ChatMessage {
   durationMs?: number | null;
 }
 
+import { io } from "socket.io-client";
+
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api/v1";
+const WS_URL = API.replace(/^http/, "ws").replace(/\/api\/v1$/, "");
 
 type View = "loading" | "login" | "chat";
 
@@ -50,6 +53,37 @@ export default function Home() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, revealed]);
+
+  useEffect(() => {
+    if (view !== "chat") return;
+    // Long-lived push channel (Phase 2): the browser's live socket. Auth rides the
+    // httpOnly access_token cookie on the handshake. Default reconnect/backoff on drop.
+    const socket = io(WS_URL, { withCredentials: true });
+    let refreshing = false;
+    socket.on("connect", () => console.log("[socket] connected", socket.id));
+    socket.on("disconnect", (reason) => console.log("[socket] disconnected", reason));
+    socket.on("debug", (payload) => console.log("[socket] debug event", payload));
+    socket.on("connect_error", (err) => {
+      // Only a rejected handshake means the access token is bad — transport blips and
+      // CORS rejections shouldn't trigger a refresh. Refresh at most one at a time:
+      // /auth/refresh rotates the token, so concurrent refreshes from multiple tabs
+      // sharing the cookie race — the loser gets seen as theft and wipes the family.
+      const isAuthError = String(err?.message).toLowerCase().includes("unauthorized");
+      if (!isAuthError || refreshing) return;
+      refreshing = true;
+      fetch(`${API}/auth/refresh`, { method: "POST", credentials: "include" })
+        .then((r) => {
+          if (r.ok) socket.connect();
+        })
+        .catch(() => {})
+        .finally(() => {
+          refreshing = false;
+        });
+    });
+    return () => {
+      socket.disconnect();
+    };
+  }, [view]);
 
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
   useEffect(() => {

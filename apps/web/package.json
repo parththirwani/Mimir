@@ -10,11 +10,12 @@
     "typecheck": "next typegen && tsc --noEmit"
   },
   "dependencies": {
-    "@mimir/ui": "workspace:*",
     "@mimir/shared-types": "workspace:*",
+    "@mimir/ui": "workspace:*",
     "next": "16.2.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
     "@mimir/eslint-config": "workspace:*",

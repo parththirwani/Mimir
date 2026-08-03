@@ -5,9 +5,10 @@ import { createServer } from "node:http";
 import express from "express";
 import passport from "passport";
 import { setupExpressErrorHandler } from "@sentry/node";
-import { authRouter } from "./auth.js";
+import { authRouter, requireAuth } from "./auth.js";
 import { messageRouter } from "./message.js";
 import { redis } from "./redis.js";
+import { emitToUser, initSocket } from "./socket.js";
 
 const config = getConfig();
 const app = express();
@@ -60,6 +61,18 @@ app.use(passport.initialize());
 app.use("/api/v1/auth", authRouter);
 app.use("/api/v1", messageRouter);
 
+// ponytail: throwaway Phase 2 checkpoint route — lets a logged-in user's open tabs
+// receive a manual server-side emit. Delete when Phase 3.3 wires real pub/sub events.
+app.post("/api/v1/debug/emit", requireAuth, (req, res) => {
+  const userId = req.userId;
+  if (!userId) {
+    res.status(401).json({ error: { code: "UNAUTHORIZED", message: "Not authenticated" } });
+    return;
+  }
+  const sent = emitToUser(userId, "debug", { payload: req.body, at: new Date().toISOString() });
+  res.json({ sent });
+});
+
 app.get("/health", async (_req, res) => {
   let db = "ok";
   try {
@@ -80,6 +93,8 @@ app.get("/health", async (_req, res) => {
 
 setupExpressErrorHandler(app);
 
-createServer(app).listen(config.PORT, () => {
+const server = createServer(app);
+initSocket(server);
+server.listen(config.PORT, () => {
   getLogger().info({ port: config.PORT }, "@mimir/api listening");
 });

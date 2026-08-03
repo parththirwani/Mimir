@@ -27,3 +27,24 @@ export function generateRefreshToken(): { token: string; hash: string } {
   const hash = createHash("sha256").update(token).digest("hex");
   return { token, hash };
 }
+
+export function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    const value = part.slice(idx + 1).trim();
+    if (key) {
+      try {
+        out[key] = decodeURIComponent(value);
+      } catch {
+        // Malformed percent-encoding (e.g. %zz) — attacker-supplied; fall back to the
+        // raw value so nothing throws on the cookie or socket handshake path.
+        out[key] = value;
+      }
+    }
+  }
+  return out;
+}
