@@ -10,6 +10,10 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  totalTokens?: number | null;
+  durationMs?: number | null;
 }
 
 export interface Conversation {
@@ -27,7 +31,12 @@ export interface ChatUsage {
 export interface ChatResult {
   content: string;
   model: string;
+  latencyMs: number;
   usage: ChatUsage;
+  actualModel?: string;
+  finishReason?: string;
+  cachedTokens?: number;
+  generationId?: string;
 }
 
 export type LlmMessageRole = "system" | "user" | "assistant";

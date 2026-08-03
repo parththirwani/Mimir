@@ -9,6 +9,10 @@ interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  totalTokens?: number | null;
+  durationMs?: number | null;
 }
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api/v1";
@@ -111,9 +115,16 @@ const send = async (e: React.FormEvent) => {
         return;
       }
       if (res.ok) {
-        const data = (await res.json()) as { message: ChatMessage };
+        const data = (await res.json()) as { message: ChatMessage; usage?: { promptTokens?: number } };
         setRevealed(0);
-        setMessages((m) => [...m, data.message]);
+        setMessages((m) => [
+          ...m.map((msg) =>
+            msg.id === clientMessageId && data.usage?.promptTokens != null
+              ? { ...msg, promptTokens: data.usage.promptTokens }
+              : msg,
+          ),
+          data.message,
+        ]);
         setSending(false);
         return;
       }
@@ -160,9 +171,16 @@ const send = async (e: React.FormEvent) => {
         {messages.map((m, i) => {
           const isLast = i === messages.length - 1 && m.role === "assistant";
           const shown = isLast ? m.content.slice(0, revealed) : m.content;
+          const meta =
+            m.role === "assistant"
+              ? `[${(m.durationMs ?? 0) / 1000}s · ${m.promptTokens ?? 0} in / ${m.completionTokens ?? 0} out]`
+              : m.promptTokens != null
+                ? `[${m.promptTokens} in]`
+                : "";
           return (
             <div key={m.id} style={{ ...styles.bubble, alignSelf: m.role === "user" ? "flex-end" : "flex-start" }}>
               {shown || (m.role === "assistant" && sending ? "…" : "")}
+              <div style={styles.meta}>{meta}</div>
             </div>
           );
         })}
@@ -191,6 +209,7 @@ const styles: Record<string, CSSProperties> = {
   button: { padding: 8, fontSize: 14, borderRadius: 6, border: "1px solid #888", cursor: "pointer" },
   thread: { flex: 1, width: "100%", maxWidth: 640, margin: "0 auto", overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, padding: 16 },
   bubble: { maxWidth: "75%", padding: "8px 12px", borderRadius: 10, background: "rgba(128,128,128,0.18)", whiteSpace: "pre-wrap" },
+  meta: { fontSize: 11, opacity: 0.5, marginTop: 4 },
   composer: { width: "100%", maxWidth: 640, margin: "0 auto", padding: 12, display: "flex", gap: 8 },
   error: { color: "crimson" },
 };

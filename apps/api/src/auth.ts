@@ -9,6 +9,7 @@ import {
   LOGIN_RATE_WINDOW_SECONDS,
   REFRESH_TOKEN_COOKIE_PATH,
   REFRESH_TOKEN_TTL_SECONDS,
+  trackEvent,
 } from "@mimir/backend-core";
 import { credentialsSchema } from "@mimir/zod-schemas";
 import { createHash, randomBytes } from "node:crypto";
@@ -112,6 +113,7 @@ authRouter.post("/register", async (req, res) => {
   const user = await prisma.user.create({ data: { email, passwordHash } });
   await issueTokens(res, user.id);
   getLogger().info({ userId: user.id }, "user registered");
+  await trackEvent(user.id, "auth_register", { provider: "email" });
   res.status(201).json({ user: { id: user.id, email: user.email } });
 });
 
@@ -137,6 +139,7 @@ authRouter.post("/login", async (req, res) => {
   }
   await issueTokens(res, user.id);
   getLogger().info({ userId: user.id }, "user logged in");
+  await trackEvent(user.id, "auth_login", { provider: "email" });
   res.json({ user: { id: user.id, email: user.email } });
 });
 
@@ -167,13 +170,17 @@ authRouter.post("/refresh", async (req, res) => {
 });
 
 authRouter.post("/logout", async (req, res) => {
-  const token = parseCookies(req.headers.cookie).refresh_token;
+  const token = parseCookies(req.headers.cookie).access_token;
   if (token) {
-    const tokenHash = createHash("sha256").update(token).digest("hex");
-    await prisma.refreshToken.updateMany({
-      where: { tokenHash, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
+    const userId = await verifyAccessToken(token, cfg.JWT_SECRET);
+    if (userId) {
+      await prisma.refreshToken.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      getLogger().info({ userId }, "user logged out");
+      await trackEvent(userId, "auth_logout");
+    }
   }
   res.clearCookie("access_token", { path: "/" });
   res.clearCookie("refresh_token", { path: REFRESH_TOKEN_COOKIE_PATH });
@@ -186,9 +193,11 @@ function googleConfigured(): boolean {
 
 authRouter.get("/google", (req, res, next) => {
   if (!googleConfigured()) {
+    getLogger().warn("google oauth requested but not configured");
     res.status(503).json({ error: { code: "NOT_CONFIGURED", message: "Google auth is not configured" } });
     return;
   }
+  getLogger().info("google oauth initiated");
   const state = randomState();
   res.cookie("oauth_state", state, {
     httpOnly: true,
@@ -231,8 +240,9 @@ authRouter.get("/google/callback", (req, res, next) => {
         return;
       }
       issueTokens(res, user.id)
-        .then(() => {
+        .then(async () => {
           getLogger().info({ userId: user.id }, "user logged in via google");
+          await trackEvent(user.id, "auth_login", { provider: "google" });
           res.redirect(cfg.WEB_APP_URL ?? "/");
         })
         .catch((e) => {

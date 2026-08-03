@@ -2,6 +2,8 @@ import {
   getLogger,
   getPrismaClient,
   callOpenRouter,
+  trackEvent,
+  fetchGenerationCost,
 } from "@mimir/backend-core";
 import { messageSchema } from "@mimir/zod-schemas";
 import { Router } from "express";
@@ -9,6 +11,63 @@ import { requireAuth } from "./auth.js";
 import { mapLLMError } from "./errors.js";
 
 const prisma = getPrismaClient();
+
+async function trackModelCall({
+  userId,
+  result,
+  error,
+}: {
+  userId: string;
+  result?: Awaited<ReturnType<typeof callOpenRouter>>;
+  error?: string;
+}): Promise<string | null> {
+  try {
+    const log = await prisma.modelCallLog.create({
+      data: {
+        userId,
+        useCase: "chat_response",
+        model: result?.model ?? "unknown",
+        actualModel: result?.actualModel,
+        tokensUsed: result?.usage.totalTokens ?? 0,
+        promptTokens: result?.usage.promptTokens,
+        completionTokens: result?.usage.completionTokens,
+        cachedTokens: result?.cachedTokens,
+        finishReason: result?.finishReason ?? "error",
+        generationId: result?.generationId,
+        costCents: 0,
+        latencyMs: result?.latencyMs ?? 0,
+        success: !!result && !error,
+      },
+    });
+    return log.id;
+  } catch (e) {
+    getLogger().error({ err: e }, "model call log write failed");
+    return null;
+  }
+}
+
+function backfillCost(generationId: string, logId: string): void {
+  void fetchGenerationCost(generationId).then((costCents) => {
+    if (costCents > 0) {
+      prisma.modelCallLog.update({ where: { id: logId }, data: { costCents } }).catch(() => {});
+    }
+  });
+}
+
+async function rollDailyUsage(userId: string, tokens: number): Promise<void> {
+  if (tokens <= 0) return;
+  const start = new Date();
+  start.setUTCHours(0, 0, 0, 0);
+  try {
+    await prisma.usageRecord.upsert({
+      where: { userId_date: { userId, date: start } },
+      create: { userId, date: start, tokensUsed: tokens },
+      update: { tokensUsed: { increment: tokens } },
+    });
+  } catch (e) {
+    getLogger().error({ err: e }, "usage rollup write failed");
+  }
+}
 
 const messageRouter: Router = Router();
 
@@ -70,6 +129,11 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Failed to record message" } });
     return;
   }
+  getLogger().info(
+    { conversationId, clientMessageId, isRetry },
+    isRetry ? "user message replayed (idempotent hit)" : "user message recorded",
+  );
+  await trackEvent(userId, "chat_message_sent", { conversationId, isRetry, contentLength: content.length });
 
   // A completed retry returns the stored result without a second LLM call.
   if (isRetry) {
@@ -79,8 +143,23 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     });
     if (reply && reply.status === "complete") {
       res.status(200).json({
-        message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
-        usage: { promptTokens: 0, completionTokens: 0, totalTokens: reply.tokenCount ?? 0 },
+        message: {
+          id: reply.id,
+          conversationId,
+          role: "assistant",
+          content: reply.content,
+          createdAt: reply.createdAt,
+          promptTokens: reply.promptTokens,
+          completionTokens: reply.completionTokens,
+          totalTokens: reply.tokenCount,
+          durationMs: reply.durationMs,
+        },
+        usage: {
+          promptTokens: reply.promptTokens ?? 0,
+          completionTokens: reply.completionTokens ?? 0,
+          totalTokens: reply.tokenCount ?? 0,
+        },
+        latencyMs: reply.durationMs,
       });
       return;
     }
@@ -104,9 +183,19 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       data: { status: "failed", errorDetail: { message: mapLLMError(e).message } },
     });
     const mapped = mapLLMError(e);
+    await trackModelCall({ userId, error: mapped.message });
     res.status(mapped.status).json({ error: { code: mapped.code, message: mapped.message } });
     return;
   }
+  const logId = await trackModelCall({ userId, result });
+  if (result.generationId && logId) backfillCost(result.generationId, logId);
+  await rollDailyUsage(userId, result.usage.totalTokens);
+
+  // Record input tokens on the user message, and full usage + latency on the reply.
+  await prisma.message.update({
+    where: { id: userMsg.id },
+    data: { promptTokens: result.usage.promptTokens },
+  });
 
   const reply = await prisma.message.create({
     data: {
@@ -116,18 +205,41 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       status: "complete",
       model: result.model,
       tokenCount: result.usage.totalTokens,
+      promptTokens: result.usage.promptTokens,
+      completionTokens: result.usage.completionTokens,
+      durationMs: result.latencyMs,
       parentMessageId: userMsg.id,
     },
   });
 
-  getLogger().info({ conversationId, tokens: result.usage.totalTokens }, "assistant reply written");
+  getLogger().info(
+    { conversationId, tokens: result.usage.totalTokens, latencyMs: result.latencyMs },
+    "assistant reply written",
+  );
+  await trackEvent(userId, "chat_message_reply", {
+    conversationId,
+    model: result.model,
+    totalTokens: result.usage.totalTokens,
+    latencyMs: result.latencyMs,
+  });
   res.status(200).json({
-    message: { id: reply.id, conversationId: conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+    message: {
+      id: reply.id,
+      conversationId,
+      role: "assistant",
+      content: reply.content,
+      createdAt: reply.createdAt,
+      promptTokens: reply.promptTokens,
+      completionTokens: reply.completionTokens,
+      totalTokens: reply.tokenCount,
+      durationMs: reply.durationMs,
+    },
     usage: {
       promptTokens: result.usage.promptTokens,
       completionTokens: result.usage.completionTokens,
       totalTokens: result.usage.totalTokens,
     },
+    latencyMs: result.latencyMs,
   });
 });
 
@@ -146,6 +258,7 @@ messageRouter.get("/conversation", requireAuth, async (req, res) => {
     where: { conversationId: conversation.id },
     orderBy: { createdAt: "asc" },
   });
+  getLogger().info({ conversationId: conversation.id, messageCount: messages.length }, "conversation loaded");
   res.json({
     conversation: { id: conversation.id, messages: messages.map((m) => ({
       id: m.id,
@@ -153,6 +266,10 @@ messageRouter.get("/conversation", requireAuth, async (req, res) => {
       role: m.role,
       content: m.content,
       createdAt: m.createdAt,
+      promptTokens: m.promptTokens,
+      completionTokens: m.completionTokens,
+      totalTokens: m.tokenCount,
+      durationMs: m.durationMs,
     })) },
   });
 });

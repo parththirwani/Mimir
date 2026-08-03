@@ -15,6 +15,7 @@ const prisma = getPrismaClient();
 
 app.use((req, res, next) => {
   const requestId = (req.headers["x-request-id"] as string | undefined) ?? randomUUID();
+  const startedAt = performance.now();
   res.setHeader("x-request-id", requestId);
   const span = tracer.startSpan(`http ${req.method} ${req.path}`, {
     kind: SpanKind.SERVER,
@@ -25,15 +26,15 @@ app.use((req, res, next) => {
     },
   });
   res.on("finish", () => {
+    const durationMs = Math.round(performance.now() - startedAt);
     span.setAttribute("http.response.status_code", res.statusCode);
     if (res.statusCode >= 500) span.setStatus({ code: SpanStatusCode.ERROR });
     span.end();
+    getLogger().info({ method: req.method, path: req.path, status: res.statusCode, durationMs }, "request");
   });
   res.on("close", () => span.end());
   runWithContext({ requestId }, () => context.with(trace.setSpan(context.active(), span), next));
 });
-
-app.use(express.json());
 
 app.use(express.json());
 
