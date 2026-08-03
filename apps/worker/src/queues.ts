@@ -1,5 +1,7 @@
 import { getConfig, getLogger } from "@mimir/backend-core";
 import { Queue, Worker, type Job, type JobsOptions } from "bullmq";
+import { executeAgent } from "./agent-execution.js";
+import { runDormancySweep } from "./dormancy.js";
 
 // ponytail: queue name constants live in worker until a producer needs them
 // elsewhere (api's Phase 6 webhook route); move to @mimir/backend-core then.
@@ -34,6 +36,26 @@ async function noop(job: Job): Promise<void> {
   getLogger().info({ queue: job.queueName, id: job.id, data: job.data }, "job processed (no-op)");
 }
 
+// Plan 4.8.1: the dormancy sweep is a daily repeatable job on agent-triggers.
+// BullMQ 6 API: a job scheduler (upsert is idempotent across worker restarts).
+export async function scheduleDormancySweep(): Promise<void> {
+  await agentTriggers.upsertJobScheduler(
+    "dormancy-sweep",
+    { pattern: "0 3 * * *", immediately: false },
+    { name: "dormancy-sweep", data: { sweep: true } },
+  );
+}
+
+// agent-triggers processor: dormancy sweep is the only real job for now; anything
+// else is Phase 6's per-connection polling, still a no-op.
+async function agentTriggerProcessor(job: Job): Promise<void> {
+  if (job.name === "dormancy-sweep") {
+    await runDormancySweep();
+    return;
+  }
+  return noop(job);
+}
+
 export function wireDlq<D, R, N extends string>(worker: Worker<D, R, N>): void {
   worker.on("failed", (job, err) => {
     // Guard against non-terminal 'failed' emissions (if any): only move a job
@@ -51,15 +73,15 @@ export function wireDlq<D, R, N extends string>(worker: Worker<D, R, N>): void {
 }
 
 export function startWorkers(): Worker[] {
-  const registrations: Array<[Queue, { concurrency?: number }]> = [
-    [agentJobs, { concurrency: 10 }],
-    [agentTriggers, { concurrency: 20 }],
-    [webhookProcessing, {}],
+  const registrations: Array<[Queue, (job: Job) => Promise<unknown>, { concurrency?: number }]> = [
+    [agentJobs, executeAgent, { concurrency: 10 }],
+    [agentTriggers, agentTriggerProcessor, { concurrency: 20 }],
+    [webhookProcessing, noop, {}],
   ];
 
   const workers: Worker[] = [];
-  for (const [queue, workerOpts] of registrations) {
-    const worker = new Worker(queue.name, noop, { connection, ...workerOpts });
+  for (const [queue, processor, workerOpts] of registrations) {
+    const worker = new Worker(queue.name, processor, { connection, ...workerOpts });
     wireDlq(worker);
     workers.push(worker);
   }

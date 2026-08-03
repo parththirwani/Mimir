@@ -42,16 +42,16 @@ function connect(token: string): Promise<Socket> {
 }
 
 describe("pub/sub -> socket (Plan 3.2/3.3)", () => {
-  test("worker publish on user-events:{userId} reaches that user's socket", async () => {
+  test("worker publish on user-events:{userId} reaches that user's socket on the payload's event name", async () => {
     const token = await signAccessToken("user-1", "socket-test-secret");
     const socket = await connect(token);
     const received: unknown[] = [];
-    socket.on("debug", (p) => received.push(p));
+    socket.on("new_message", (p) => received.push(p));
 
-    await pub.publish("user-events:user-1", JSON.stringify({ event: "new_message", conversationId: "c-1" }));
+    await pub.publish("user-events:user-1", JSON.stringify({ event: "new_message", payload: { conversationId: "c-1" } }));
     await Bun.sleep(100);
 
-    expect(received).toEqual([{ event: "new_message", conversationId: "c-1" }]);
+    expect(received).toEqual([{ conversationId: "c-1" }]);
     socket.disconnect();
   });
 
@@ -59,9 +59,9 @@ describe("pub/sub -> socket (Plan 3.2/3.3)", () => {
     const token = await signAccessToken("user-1", "socket-test-secret");
     const socket = await connect(token);
     let got = 0;
-    socket.on("debug", () => got++);
+    socket.on("new_message", () => got++);
 
-    await pub.publish("user-events:user-2", JSON.stringify({ hi: true }));
+    await pub.publish("user-events:user-2", JSON.stringify({ event: "new_message", payload: { hi: true } }));
     await Bun.sleep(100);
 
     expect(got).toBe(0);

@@ -38,6 +38,7 @@ interface TransportConfig {
 interface LlmConfig {
   transport: TransportConfig;
   useCases: Record<string, LlmUseCaseConfig>;
+  embeddings?: { model: string };
 }
 
 let cached: LlmConfig | null = null;
@@ -200,4 +201,29 @@ export async function fetchGenerationCost(generationId: string): Promise<number>
   } catch {
     return 0;
   }
+}
+
+// OpenRouter's /embeddings endpoint — OpenAI-compatible. No retry beyond the
+// single attempt; Phase 4.3 dedup treats a failed embed as "no match" upstream.
+export async function callEmbeddings(text: string): Promise<number[]> {
+  const apiKey = getConfig().OPENROUTER_API_KEY;
+  if (!apiKey) throw new NotConfiguredError();
+  const model = loadConfig().embeddings?.model;
+  if (!model) throw new Error("No embedding model configured");
+  const { timeoutMs } = loadConfig().transport;
+
+  const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ model, input: text }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) throw new OpenRouterError(`Embedding error ${res.status}: ${(await res.text()).slice(0, 500)}`, res.status, true);
+  const json = (await res.json()) as { data?: { embedding?: number[] }[] };
+  const embedding = json.data?.[0]?.embedding;
+  if (!embedding || embedding.length === 0) throw new OpenRouterError("Embedding response missing vector", 502, false);
+  return embedding;
 }

@@ -3,71 +3,23 @@ import {
   getPrismaClient,
   callOpenRouter,
   trackEvent,
-  fetchGenerationCost,
+  trackModelCall,
+  backfillCost,
+  rollDailyUsage,
 } from "@mimir/backend-core";
 import { messageSchema } from "@mimir/zod-schemas";
 import { Router } from "express";
 import { requireAuth } from "./auth.js";
 import { mapLLMError } from "./errors.js";
+import {
+  classifyMessage,
+  embedTask,
+  findDuplicateAgent,
+  listActiveAgents,
+  spawnAgent,
+} from "./agent.js";
 
 const prisma = getPrismaClient();
-
-async function trackModelCall({
-  userId,
-  result,
-  error,
-}: {
-  userId: string;
-  result?: Awaited<ReturnType<typeof callOpenRouter>>;
-  error?: string;
-}): Promise<string | null> {
-  try {
-    const log = await prisma.modelCallLog.create({
-      data: {
-        userId,
-        useCase: "chat_response",
-        model: result?.model ?? "unknown",
-        actualModel: result?.actualModel,
-        tokensUsed: result?.usage.totalTokens ?? 0,
-        promptTokens: result?.usage.promptTokens,
-        completionTokens: result?.usage.completionTokens,
-        cachedTokens: result?.cachedTokens,
-        finishReason: result?.finishReason ?? "error",
-        generationId: result?.generationId,
-        costCents: 0,
-        latencyMs: result?.latencyMs ?? 0,
-        success: !!result && !error,
-      },
-    });
-    return log.id;
-  } catch (e) {
-    getLogger().error({ err: e }, "model call log write failed");
-    return null;
-  }
-}
-
-function backfillCost(generationId: string, logId: string): void {
-  void fetchGenerationCost(generationId).then((costCents) => {
-    if (costCents > 0) {
-      prisma.modelCallLog.update({ where: { id: logId }, data: { costCents } }).catch(() => {});
-    }
-  });
-}
-
-async function rollDailyUsage(userId: string, tokens: number): Promise<void> {
-  if (tokens <= 0) return;
-  const start = new Date();
-  start.setUTCHours(0, 0, 0, 0);
-  try {
-    await prisma.usageRecord.upsert({
-      where: { userId_date: { userId, date: start } },
-      create: { userId, date: start, tokensUsed: tokens },
-      update: { tokensUsed: { increment: tokens } },
-    });
-  } catch (e) {
-    getLogger().error({ err: e }, "usage rollup write failed");
-  }
-}
 
 const messageRouter: Router = Router();
 
@@ -165,6 +117,101 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     }
   }
 
+  // Phase 4: Interaction Agent classifies the intent. spawn_agent delegates to an
+  // execution agent (dedup -> outbox); answer_directly falls through to the chat flow.
+  const classification = await classifyMessage(userId, content, await listActiveAgents(userId));
+  if (classification.action === "spawn_agent" && classification.taskDescription) {
+    await trackEvent(userId, "agent_spawn_classified", {
+      conversationId,
+      confidence: classification.confidence,
+      targetAgentId: classification.targetAgentId ?? null,
+    });
+
+    // Plan 4.2.1: targetAgentId means "reuse this existing agent" — trigger it,
+    // never spawn a duplicate next to it.
+    if (classification.targetAgentId) {
+      const target = await prisma.agent.findFirst({
+        where: { id: classification.targetAgentId, userId, status: "active" },
+      });
+      if (target) {
+        await prisma.outboxEvent.create({
+          data: {
+            eventType: "retarget_agent",
+            payload: { agentId: target.id, trigger: "user_message" },
+          },
+        });
+        getLogger().info({ agentId: target.id, conversationId }, "existing agent retargeted via outbox");
+        const reply = await prisma.message.create({
+          data: {
+            conversationId,
+            role: "assistant",
+            content: `I'll use your existing agent for: "${target.taskDescription}". I'll surface anything relevant here.`,
+            status: "complete",
+            parentMessageId: userMsg.id,
+          },
+        });
+        res.status(200).json({
+          message: {
+            id: reply.id,
+            conversationId,
+            role: "assistant",
+            content: reply.content,
+            createdAt: reply.createdAt,
+          },
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          latencyMs: 0,
+        });
+        return;
+      }
+    }
+
+    const { duplicate, embedding: dedupEmbedding } = await findDuplicateAgent(userId, classification.taskDescription);
+    let ack: string;
+    if (duplicate) {
+      ack = `It looks like you already have an agent watching something very similar: "${duplicate.taskDescription}". Want me to reuse that one, or set up a new one?`;
+    } else {
+      // dedupEmbedding is set when findDuplicateAgent's embed succeeded; only
+      // re-embed on the rare failure path (dedup degrades to no-match).
+      let embedding = dedupEmbedding;
+      if (!embedding) {
+        try {
+          embedding = await embedTask(classification.taskDescription);
+        } catch (e) {
+          getLogger().error({ err: e }, "embedding failed; refusing to spawn agent");
+          const mapped = mapLLMError(e);
+          res.status(mapped.status).json({ error: { code: mapped.code, message: mapped.message } });
+          return;
+        }
+      }
+      const { agentId } = await spawnAgent({
+        userId,
+        ownerConversationId: conversationId,
+        taskDescription: classification.taskDescription,
+        embedding,
+      });
+      await trackEvent(userId, "agent_spawned", { conversationId, agentId });
+      getLogger().info({ agentId, conversationId }, "agent spawned via outbox");
+      ack = `Done — I've set up an agent to: "${classification.taskDescription}". I'll surface anything relevant here.`;
+    }
+    const reply = await prisma.message.create({
+      data: { conversationId, role: "assistant", content: ack, status: "complete", parentMessageId: userMsg.id },
+    });
+    getLogger().info({ conversationId, duplicate: Boolean(duplicate) }, "agent spawn acknowledged");
+    res.status(200).json({
+      message: {
+        id: reply.id,
+        conversationId,
+        role: "assistant",
+        content: reply.content,
+        createdAt: reply.createdAt,
+      },
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      latencyMs: 0,
+      possibleDuplicateOf: duplicate?.id,
+    });
+    return;
+  }
+
   // Context: prior assistant/user turns so the reply is a conversation, not a one-shot.
   const history = await prisma.message.findMany({
     where: { conversationId, role: { in: ["user", "assistant"] } },
@@ -183,11 +230,11 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       data: { status: "failed", errorDetail: { message: mapLLMError(e).message } },
     });
     const mapped = mapLLMError(e);
-    await trackModelCall({ userId, error: mapped.message });
+    await trackModelCall({ userId, useCase: "chat_response", error: mapped.message });
     res.status(mapped.status).json({ error: { code: mapped.code, message: mapped.message } });
     return;
   }
-  const logId = await trackModelCall({ userId, result });
+  const logId = await trackModelCall({ userId, useCase: "chat_response", result });
   if (result.generationId && logId) backfillCost(result.generationId, logId);
   await rollDailyUsage(userId, result.usage.totalTokens);
 

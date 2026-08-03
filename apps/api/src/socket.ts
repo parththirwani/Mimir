@@ -66,16 +66,18 @@ export function initPubSub(subscriber: Redis): void {
   subscriber.on("error", (e) => getLogger().error({ err: e }, "pub/sub redis error"));
   subscriber.on("pmessage", (_pattern, channel, message) => {
     const userId = channel.replace(/^user-events:/, "");
-    let payload: unknown;
+    let parsed: { event?: string; payload?: unknown };
     try {
-      payload = JSON.parse(message);
+      parsed = JSON.parse(message);
     } catch {
       getLogger().warn({ channel, message }, "dropping non-JSON pub/sub payload");
       return;
     }
-    // Reuse the web client's existing "debug" listener so Phase 3's checkpoint
-    // needs no web changes; Phase 4.6 delivers {event:'new_message', conversationId}.
-    const delivered = emitToUser(userId, "debug", payload);
-    getLogger().info({ userId, delivered }, "pub/sub event forwarded to sockets");
+    // Payloads carry their own event name (Phase 4.6: {event:'new_message',...});
+    // emit on that name so the web client can wire per-event handlers. Falls back
+    // to the historical "debug" event for the Phase 3 manual-publish checkpoint.
+    const eventName = typeof parsed.event === "string" ? parsed.event : "debug";
+    const delivered = emitToUser(userId, eventName, parsed.payload ?? parsed);
+    getLogger().info({ userId, eventName, delivered }, "pub/sub event forwarded to sockets");
   });
 }

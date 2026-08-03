@@ -63,6 +63,19 @@ export default function Home() {
     socket.on("connect", () => console.log("[socket] connected", socket.id));
     socket.on("disconnect", (reason) => console.log("[socket] disconnected", reason));
     socket.on("debug", (payload) => console.log("[socket] debug event", payload));
+    // Phase 4.6: an agent delivered a message. Payload is intentionally lightweight
+    // ({conversationId}), so refetch the full thread rather than trusting it.
+    socket.on("new_message", () => {
+      fetch(`${API}/conversation`, { credentials: "include" })
+        .then((r) => (r.ok ? (r.json() as Promise<{ conversation: { id: string; messages: ChatMessage[] } }>) : null))
+        .then((data) => {
+          if (!data) return;
+          setConversationId(data.conversation.id);
+          setMessages(data.conversation.messages);
+          setRevealed(0);
+        })
+        .catch((err) => console.error("[socket] conversation refetch failed", err));
+    });
     socket.on("connect_error", (err) => {
       // Only a rejected handshake means the access token is bad — transport blips and
       // CORS rejections shouldn't trigger a refresh. Refresh at most one at a time:
