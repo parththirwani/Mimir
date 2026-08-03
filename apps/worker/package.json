@@ -6,11 +6,14 @@
   "scripts": {
     "dev": "OTEL_SERVICE_NAME=mimir-worker bun --hot --env-file=../../.env src/index.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint . --max-warnings 0"
+    "lint": "eslint . --max-warnings 0",
+    "test": "bun test"
   },
   "dependencies": {
     "@mimir/backend-core": "workspace:*",
-    "@mimir/shared-types": "workspace:*"
+    "@mimir/shared-types": "workspace:*",
+    "bullmq": "^6.0.6",
+    "ioredis": "^6.0.0"
   },
   "devDependencies": {
     "@mimir/eslint-config": "workspace:*",

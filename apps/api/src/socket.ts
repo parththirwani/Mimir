@@ -1,5 +1,6 @@
 import type { Server as HttpServer } from "node:http";
 import { getConfig, getLogger } from "@mimir/backend-core";
+import type { Redis } from "ioredis";
 import { Server } from "socket.io";
 import { parseCookies, verifyAccessToken } from "./tokens.js";
 
@@ -52,4 +53,29 @@ export function emitToUser(userId: string, event: string, payload: unknown): num
   if (!io || !ids || ids.size === 0) return 0;
   for (const socketId of ids) io.to(socketId).emit(event, payload);
   return ids.size;
+}
+
+// Plan 3.2/3.3: worker publishes on `user-events:{userId}` (channel convention),
+// we subscribe here and push to the user's sockets. Pattern subscribe needs its
+// own connection — a subscribed ioredis client can't run normal commands.
+let pubsubStarted = false;
+export function initPubSub(subscriber: Redis): void {
+  if (pubsubStarted) return;
+  pubsubStarted = true;
+  subscriber.psubscribe("user-events:*");
+  subscriber.on("error", (e) => getLogger().error({ err: e }, "pub/sub redis error"));
+  subscriber.on("pmessage", (_pattern, channel, message) => {
+    const userId = channel.replace(/^user-events:/, "");
+    let payload: unknown;
+    try {
+      payload = JSON.parse(message);
+    } catch {
+      getLogger().warn({ channel, message }, "dropping non-JSON pub/sub payload");
+      return;
+    }
+    // Reuse the web client's existing "debug" listener so Phase 3's checkpoint
+    // needs no web changes; Phase 4.6 delivers {event:'new_message', conversationId}.
+    const delivered = emitToUser(userId, "debug", payload);
+    getLogger().info({ userId, delivered }, "pub/sub event forwarded to sockets");
+  });
 }
