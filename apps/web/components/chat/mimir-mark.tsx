@@ -1,16 +1,16 @@
+import Image from "next/image";
 import { cn } from "@/lib/utils";
 
-/** The Mimir mark: circle in circle. */
+/** The Mimir logo. */
 export function MimirMark({ className }: { className?: string | undefined }) {
   return (
-    <span
+    <Image
+      src="/logo.png"
+      alt=""
       aria-hidden
-      className={cn(
-        "relative inline-flex size-5 items-center justify-center rounded-full border border-border-strong",
-        className,
-      )}
-    >
-      <span className="size-1.5 rounded-full bg-signal" />
-    </span>
+      width={20}
+      height={20}
+      className={cn("size-5 -translate-y-1 rounded-full object-contain", className)}
+    />
   );
 }

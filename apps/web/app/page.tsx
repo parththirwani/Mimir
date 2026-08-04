@@ -1,5 +1,7 @@
 "use client";
 
+import Image from "next/image";
+import Link from "next/link";
 import { motion } from "motion/react";
 import { Stagger, Item } from "@/components/landing/motion";
 import { Spotlight } from "@/components/landing/Spotlight";
@@ -8,17 +10,23 @@ import { Marquee } from "@/components/landing/Marquee";
 import { FlowBeams } from "@/components/landing/FlowBeams";
 import { ThreadDemo } from "@/components/landing/ThreadDemo";
 import { GlowCard } from "@/components/landing/GlowCard";
-import { Compare } from "@/components/landing/Compare";
 
-import { Mail, Calendar, NotebookText, Kanban, Github, Slack } from "lucide-react";
+import {
+  GmailIcon,
+  GoogleCalendarIcon,
+  NotionIcon,
+  LinearIcon,
+  GitHubIcon,
+  SlackIcon,
+} from "@/components/landing/brand-icons";
 
 const integrations = [
-  { name: "Gmail", icon: Mail },
-  { name: "Calendar", icon: Calendar },
-  { name: "Notion", icon: NotebookText },
-  { name: "Linear", icon: Kanban },
-  { name: "GitHub", icon: Github },
-  { name: "Slack", icon: Slack },
+  { name: "Gmail", icon: GmailIcon },
+  { name: "Calendar", icon: GoogleCalendarIcon },
+  { name: "Notion", icon: NotionIcon },
+  { name: "Linear", icon: LinearIcon },
+  { name: "GitHub", icon: GitHubIcon },
+  { name: "Slack", icon: SlackIcon },
 ];
 
 const vignettes = [
@@ -30,7 +38,7 @@ const vignettes = [
   },
   {
     outcome: "The answer was already written down.",
-    body: "A Slack thread went quiet on something you were waiting on. Mimir checked the linked Notion doc, saw it had been updated an hour earlier, and told you — you didn't have to ask again.",
+    body: "A Slack thread went quiet on something you were waiting on. Mimir checked the linked Notion doc, saw it had been updated an hour earlier, and told you. You didn't have to ask again.",
     span: "sm:col-span-2",
     size: "small" as const,
   },
@@ -55,7 +63,6 @@ export default function Home() {
       <main>
         <Hero />
         <IntegrationRow />
-        <Problem />
         <HowItWorks />
         <Behaviours />
         <Continuity />
@@ -70,20 +77,30 @@ export default function Home() {
 function Nav() {
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur-md">
-      <div className="mx-auto flex max-w-5xl items-center justify-end gap-6 px-6 py-4">
+      <div className="mx-auto flex max-w-5xl items-center justify-between gap-6 px-6 py-4">
+        <Link href="/" className="flex items-center gap-2.5">
+          <Image
+            src="/logo.png"
+            alt="Mimir"
+            width={28}
+            height={28}
+            className="size-7 -translate-y-1 rounded-full object-contain"
+          />
+          <span className="font-condensed text-lg font-semibold text-foreground">Mimir</span>
+        </Link>
         <nav className="flex shrink-0 items-center gap-6 text-sm text-muted-foreground">
-          <a
+          <Link
             href="#how"
             className="hidden transition-colors duration-200 hover:text-foreground sm:inline"
           >
             How it works
-          </a>
-          <a
+          </Link>
+          <Link
             href="/login"
             className="rounded-md border border-border-strong px-3.5 py-1.5 text-foreground transition-colors duration-200 hover:bg-secondary"
           >
             Log in
-          </a>
+          </Link>
         </nav>
       </div>
     </header>
@@ -102,10 +119,10 @@ function Hero() {
       />
       <div className="relative mx-auto max-w-5xl px-6 pt-28 pb-24 sm:pt-40 sm:pb-32">
         <p className="reveal text-sm text-muted-foreground">
-          <span className="text-signal">—</span> An assistant that stays running
+          The assistant that never stops listening
         </p>
         <h1
-          className="reveal font-condensed mt-7 max-w-3xl text-[2.75rem] leading-[1.02] font-semibold sm:text-6xl md:text-7xl"
+          className="reveal font-condensed mt-7 max-w-5xl text-[2.75rem] leading-[1.02] font-semibold sm:text-6xl md:text-7xl"
           style={{ animationDelay: "80ms" }}
         >
           You say it once.
@@ -116,15 +133,16 @@ function Hero() {
           className="reveal mt-8 max-w-xl text-lg leading-relaxed text-muted-foreground"
           style={{ animationDelay: "160ms" }}
         >
-          Not a chat window you open and close. One continuous assistant that watches the tools you
-          already work in, and speaks up only when something actually matters.
+          Not a chat window you open and close. An assistant that keeps the full context of your
+          work, never stops listening, and handles the tools you already live in, speaking up only
+          when something actually matters.
         </p>
         <div
           className="reveal mt-10 flex items-center gap-5"
           style={{ animationDelay: "240ms" }}
         >
-          <MovingBorderLink href="/chat">Log in</MovingBorderLink>
-          <span className="text-sm text-muted-foreground">One continuous thread</span>
+          <MovingBorderLink href="/login">Log in</MovingBorderLink>
+          <span className="text-sm text-muted-foreground">Handles your apps for you</span>
         </div>
       </div>
     </section>
@@ -144,34 +162,11 @@ function IntegrationRow() {
               key={integration.name}
               className="flex items-center gap-2 pr-8 text-sm text-muted-foreground transition-colors duration-200 hover:text-foreground"
             >
-              <integration.icon className="h-4 w-4 shrink-0" aria-hidden="true" strokeWidth={1.5} />
+              <integration.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
               {integration.name}
             </span>
           ))}
         </Marquee>
-      </div>
-    </section>
-  );
-}
-
-function Problem() {
-  return (
-    <section className="border-b border-border">
-      <div className="mx-auto max-w-5xl px-6 py-24 sm:py-32">
-        <Stagger className="max-w-2xl" gap={0.1}>
-          <Item as="h2" className="font-condensed text-3xl leading-tight font-semibold sm:text-5xl">
-            The work isn't scattered. Knowing about it is.
-          </Item>
-          <Item as="p" className="mt-6 text-lg leading-relaxed text-muted-foreground">
-            Six tools, all talking at once, none of them talking to each other. Drag across to see
-            the difference.
-          </Item>
-        </Stagger>
-        <Stagger className="mt-12" amount={0.15}>
-          <Item variant="scale">
-            <Compare />
-          </Item>
-        </Stagger>
       </div>
     </section>
   );
@@ -186,7 +181,7 @@ function HowItWorks() {
             What it actually does
           </Item>
           <Item as="p" className="mt-6 text-lg leading-relaxed text-muted-foreground">
-            You tell Mimir something — a task, something you're waiting on, someone you're expecting
+            You tell Mimir something: a task, something you're waiting on, someone you're expecting
             to hear back from. It holds it, watches the tools it's connected to, and decides what's
             worth your attention.
           </Item>
@@ -218,7 +213,7 @@ function HowItWorks() {
               <p className="mt-4 leading-relaxed text-muted-foreground">{vignette.body}</p>
               {vignette.size === "large" ? (
                 <p className="mt-auto border-t border-border pt-5 text-xs tracking-widest text-muted-foreground uppercase">
-                  <span className="text-signal">—</span> correlated across GitHub and Linear
+                  correlated across GitHub and Linear
                 </p>
               ) : null}
             </GlowCard>
@@ -231,20 +226,20 @@ function HowItWorks() {
 
 const behaviours = [
   {
-    title: "It remembers so you don't repeat yourself",
-    body: "Mention a task, a thing you're waiting on, a person you expect to hear back from. Mimir holds it and keeps checking. You never re-ask.",
+    title: "It holds all the context",
+    body: "Mention a task, a thing you're waiting on, a person you expect to hear back from. Mimir keeps it all in mind, across every tool, so you never re-ask.",
+  },
+  {
+    title: "It never stops listening",
+    body: "Tell it once and it keeps working in the background, watching your tools and updating you as things move, even after you've closed the tab.",
   },
   {
     title: "It filters before it interrupts",
-    body: "It watches your tools quietly and discards the noise. A reply worth knowing about, a deadline closing in, a PR that needs eyes — those reach you. Nothing else does.",
+    body: "It watches your tools quietly and discards the noise. A reply worth knowing about, a deadline closing in, a PR that needs eyes: those reach you. Nothing else does.",
   },
   {
     title: "It asks when it isn't sure",
     body: "If two things you mentioned turn out to be the same thing, it checks with you first. It would rather confirm than guess on your behalf.",
-  },
-  {
-    title: "It finds you where you already are",
-    body: "Desktop, browser, a push notification, or a quiet email if you've stepped away. Type to it or say it out loud — same thread either way.",
   },
 ];
 
@@ -284,11 +279,12 @@ function Continuity() {
       <div className="relative mx-auto max-w-5xl px-6 py-24 sm:py-32">
         <Stagger className="max-w-2xl" gap={0.11}>
           <Item as="h2" className="font-condensed text-3xl leading-tight font-semibold sm:text-5xl">
-            One thread, never restarted
+            Everything you need, in one running context
           </Item>
           <Item as="p" className="mt-6 max-w-xl text-lg leading-relaxed text-muted-foreground">
-            Typed or spoken, it's the same conversation. Nothing gets re-explained, and nothing gets
-            handed back to you as a to-do list.
+            Tell it once and it keeps working in the background. Every app you use feeds one
+            running thread. Nothing gets re-explained, nothing gets handed back to you as a to-do
+            list.
           </Item>
         </Stagger>
         <div className="mt-12">
@@ -332,7 +328,7 @@ function Trust() {
         <Stagger className="mt-12 grid gap-4 sm:grid-cols-3" gap={0.1} amount={0.15}>
           {[
             ["Per-tool access", "Grant and revoke each connection on its own."],
-            ["Nothing silent", "Every action it takes is written back into your thread."],
+            ["Nothing silent", "Every action it takes is written back into your conversation."],
             ["Asks before it acts", "Irreversible steps wait for a yes from you."],
           ].map(([title, body]) => (
             <Item
@@ -357,10 +353,12 @@ function Closing() {
       <div className="relative mx-auto max-w-5xl px-6 py-28 sm:py-36">
         <Stagger className="max-w-2xl" gap={0.11}>
           <Item as="h2" className="font-condensed text-4xl leading-[1.05] font-semibold sm:text-6xl">
-            Stop managing your assistant.
+            You say it once.
+            <br />
+            Mimir handles the rest.
           </Item>
           <Item as="p" className="mt-6 max-w-xl text-lg leading-relaxed text-muted-foreground">
-            Log in and pick up the one thread that never restarts.
+            Log in and let it run the apps you already use.
           </Item>
           <Item className="mt-10">
             <MovingBorderLink href="/login">Log in</MovingBorderLink>

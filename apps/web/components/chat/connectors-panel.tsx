@@ -57,7 +57,7 @@ export function ConnectorsPanel({ open, onClose, onConnect, items, onLogout }: P
               const Icon = item.icon;
               return (
                 <li key={item.name} className="flex items-center gap-3 px-5 py-3.5">
-                  <Icon className="size-4 shrink-0 text-muted-foreground" strokeWidth={1.25} />
+                  <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
                   <span className="flex-1 text-sm font-medium text-foreground">{item.name}</span>
                   {item.connected ? (
                     <span className="flex items-center gap-2">

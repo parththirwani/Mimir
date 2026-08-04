@@ -1,7 +1,8 @@
+import type { SVGProps } from "react";
+import Image from "next/image";
 import { motion } from "motion/react";
-import { Sparkles, type LucideIcon } from "lucide-react";
 
-type Mark = { name: string; icon: LucideIcon };
+type Mark = { name: string; icon: (props: SVGProps<SVGSVGElement>) => React.JSX.Element };
 
 /**
  * Integration marks on either side, with beams of light drifting inward
@@ -84,7 +85,7 @@ function Column({ marks, align }: { marks: Mark[]; align: "start" | "end" }) {
           transition={{ duration: 0.5, delay: index * 0.1, ease: [0.16, 1, 0.3, 1] }}
           className="flex items-center gap-2 rounded-md border border-border bg-card/60 px-3 py-2 text-sm text-muted-foreground backdrop-blur-sm transition-colors duration-300 hover:border-border-strong hover:text-foreground"
         >
-          <mark.icon className="h-4 w-4 shrink-0" aria-hidden="true" strokeWidth={1.5} />
+          <mark.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
           <span className="hidden sm:inline">{mark.name}</span>
         </motion.span>
       ))}
@@ -106,7 +107,13 @@ function Node() {
         transition={{ duration: 6, repeat: Infinity, ease: "easeInOut" }}
       />
       <div className="relative flex h-16 w-16 items-center justify-center rounded-full border border-border-strong bg-background sm:h-20 sm:w-20">
-        <Sparkles className="h-6 w-6 text-foreground" aria-hidden="true" strokeWidth={1.5} />
+        <Image
+          src="/logo.png"
+          alt="Mimir"
+          width={48}
+          height={48}
+          className="h-10 w-10 -translate-y-1 rounded-full object-contain sm:h-12 sm:w-12"
+        />
       </div>
     </div>
   );

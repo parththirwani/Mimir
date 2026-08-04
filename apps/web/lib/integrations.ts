@@ -1,20 +1,10 @@
-import { Mail } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import type { ComponentType, SVGProps } from "react";
 
 export type Integration = {
   name: string;
-  icon: LucideIcon;
+  icon: ComponentType<SVGProps<SVGSVGElement>>;
   connected: boolean;
 };
-
-/** Icon lookup for connectors the backend may expose. */
-const ICONS: Record<string, LucideIcon> = {
-  Gmail: Mail,
-};
-
-export function integrationIcon(name: string): LucideIcon {
-  return ICONS[name] ?? Mail;
-}
 
 export function watchingLabel(names: string[]): string {
   if (names.length === 0) return "No connectors yet";

@@ -15,9 +15,13 @@ const archivo = Archivo({
 });
 
 export const metadata: Metadata = {
-  title: "Mimir — the assistant that keeps working after you stop asking",
+  title: "Mimir",
   description:
     "Mimir is one continuous AI assistant. Tell it something once; it watches your Gmail, Calendar, Notion, Linear, GitHub and Slack and only interrupts when it matters.",
+  icons: {
+    icon: "/icon.png",
+    apple: "/apple-icon.png",
+  },
 };
 
 export default function RootLayout({

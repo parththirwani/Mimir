@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
@@ -12,11 +13,11 @@ export function MovingBorderLink({
   className?: string;
 }) {
   return (
-    <a href={href} className={cn("moving-border group relative inline-flex", className)}>
+    <Link href={href} className={cn("moving-border group relative inline-flex", className)}>
       <span className="relative z-10 inline-flex items-center rounded-[calc(var(--radius)-1px)] bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground transition-transform duration-200 group-hover:scale-[1.015]">
         {children}
       </span>
-    </a>
+    </Link>
   );
 }
 

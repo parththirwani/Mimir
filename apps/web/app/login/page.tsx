@@ -49,7 +49,7 @@ export default function LoginPage() {
       <Spotlight />
       <div className="relative w-full max-w-sm rounded-lg border border-border bg-card/40 p-8 backdrop-blur-sm">
         <div className="flex items-center gap-2.5">
-          <MimirMark />
+          <MimirMark className="size-7" />
           <span className="font-condensed text-lg font-semibold text-foreground">Mimir</span>
         </div>
         <h1 className="font-condensed mt-6 text-2xl font-semibold text-foreground">
@@ -57,8 +57,8 @@ export default function LoginPage() {
         </h1>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
           {mode === "login"
-            ? "Log in to keep the one thread going."
-            : "Start the one thread that never restarts."}
+            ? "Log in and it picks up right where it left off."
+            : "Start with an assistant that never stops listening."}
         </p>
         <form className="mt-8 flex flex-col gap-4" onSubmit={submit}>
           <label className="flex flex-col gap-1.5">

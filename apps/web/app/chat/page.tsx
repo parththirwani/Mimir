@@ -10,7 +10,7 @@ import { MovingBorderButton } from "@/components/chat/moving-border-button";
 import { Reveal, SignalDot } from "@/components/chat/motion";
 import { ThreadBubbles } from "@/components/chat/thread-bubbles";
 import { ConnectorsPanel } from "@/components/chat/connectors-panel";
-import { integrationIcon } from "@/lib/integrations";
+import { GmailIcon } from "@/components/landing/brand-icons";
 import type { ThreadMessage } from "@/lib/thread";
 import { cn } from "@/lib/utils";
 
@@ -231,13 +231,6 @@ export default function ChatPage() {
     });
   }, [refreshGmailStatus]);
 
-  const handleConnect = useCallback(
-    async (_name: string) => {
-      await connectGmail();
-    },
-    [connectGmail],
-  );
-
   const logout = useCallback(async () => {
     await fetch(`${API}/auth/logout`, { method: "POST", credentials: "include" });
     setMessages([]);
@@ -245,7 +238,7 @@ export default function ChatPage() {
     router.replace("/login");
   }, [router]);
 
-  const connectors = [{ name: "Gmail", icon: integrationIcon("Gmail"), connected: gmailConnected }];
+  const connectors = [{ name: "Gmail", icon: GmailIcon, connected: gmailConnected }];
   const watching = connectors.filter((c) => c.connected).map((c) => c.name);
 
   if (view === "loading") {
@@ -261,13 +254,14 @@ export default function ChatPage() {
       <SiteHeader
         watching={watching}
         onOpenConnectors={() => setConnectorsOpen(true)}
+        onLogout={logout}
       />
 
       <ConnectorsPanel
         open={connectorsOpen}
         onClose={() => setConnectorsOpen(false)}
         items={connectors}
-        onConnect={handleConnect}
+        onConnect={connectGmail}
         onLogout={logout}
       />
 
@@ -353,8 +347,8 @@ export default function ChatPage() {
           </div>
           <p className="mt-2 pl-11 text-xs text-muted-foreground">
             {listening
-              ? "Listening — speak, it goes into the same thread."
-              : "One thread. No folders, no starting over."}
+              ? "Listening — speak, it keeps working in the background."
+              : "Always listening. Hand it your apps, it connects the dots."}
           </p>
         </div>
       </div>
@@ -387,9 +381,6 @@ function FirstVisit() {
         <h1 className="font-condensed text-3xl font-semibold text-foreground sm:text-4xl">
           Say the first thing.
         </h1>
-        <p className="mx-auto mt-4 max-w-sm text-[0.95rem] leading-7 text-muted-foreground">
-          There's nothing to set up. Just tell it what you're waiting on.
-        </p>
       </Reveal>
     </div>
   );

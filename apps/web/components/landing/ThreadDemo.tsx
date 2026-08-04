@@ -8,7 +8,7 @@ const lines = [
   { role: "you", text: "Is that the same pilot I asked you to track last week?" },
   {
     role: "mimir",
-    text: "I think so — same account, different doc. Confirm before I merge them?",
+    text: "I think so, same account, different doc. Confirm before I merge them?",
   },
 ];
 
@@ -57,7 +57,7 @@ export function ThreadDemo() {
           animate={{ opacity: [0.3, 1, 0.3] }}
           transition={{ duration: 2.4, repeat: Infinity, ease: "easeInOut" }}
         />
-        Still watching — nothing else worth telling you yet.
+        Still watching, nothing else worth telling you yet.
       </motion.div>
     </div>
   );
