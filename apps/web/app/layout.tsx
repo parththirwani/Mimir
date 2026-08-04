@@ -1,19 +1,23 @@
 import type { Metadata } from "next";
-import localFont from "next/font/local";
+import { Archivo, DM_Sans } from "next/font/google";
 import "./globals.css";
 
-const geistSans = localFont({
-  src: "./fonts/GeistVF.woff",
-  variable: "--font-geist-sans",
+const dmSans = DM_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500"],
+  variable: "--font-dm-sans",
 });
-const geistMono = localFont({
-  src: "./fonts/GeistMonoVF.woff",
-  variable: "--font-geist-mono",
+
+const archivo = Archivo({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-archivo",
 });
 
 export const metadata: Metadata = {
-  title: "Mimir",
-  description: "Conversational agent app",
+  title: "Mimir — the assistant that keeps working after you stop asking",
+  description:
+    "Mimir is one continuous AI assistant. Tell it something once; it watches your Gmail, Calendar, Notion, Linear, GitHub and Slack and only interrupts when it matters.",
 };
 
 export default function RootLayout({
@@ -22,10 +26,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable}`}>
-        {children}
-      </body>
+    <html lang="en" className={`${dmSans.variable} ${archivo.variable}`}>
+      <body style={{ backgroundColor: "oklch(0.145 0.004 285)" }}>{children}</body>
     </html>
   );
 }

@@ -13,14 +13,21 @@
     "@mimir/shared-types": "workspace:*",
     "@mimir/ui": "workspace:*",
     "@nangohq/frontend": "^0.71.3",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.575.0",
+    "motion": "^12.43.0",
     "next": "16.2.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "socket.io-client": "^4.8.3"
+    "socket.io-client": "^4.8.3",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.1",
+    "tw-animate-css": "^1.3.4"
   },
   "devDependencies": {
     "@mimir/eslint-config": "workspace:*",
     "@mimir/typescript-config": "workspace:*",
+    "@tailwindcss/postcss": "^4.2.1",
     "@types/node": "^22.15.3",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",

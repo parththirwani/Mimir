@@ -230,7 +230,7 @@ authRouter.get("/google/callback", (req, res, next) => {
         .then(async () => {
           getLogger().info({ userId: user.id }, "user logged in via google");
           await trackEvent(user.id, "auth_login", { provider: "google" });
-          res.redirect(cfg.WEB_APP_URL ?? "/");
+          res.redirect(`${cfg.WEB_APP_URL ?? ""}/chat`);
         })
         .catch((e) => {
           getLogger().error({ err: e }, "failed to issue tokens after google login");

@@ -1,323 +1,380 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import { motion } from "motion/react";
+import { Stagger, Item } from "@/components/landing/motion";
+import { Spotlight } from "@/components/landing/Spotlight";
+import { MovingBorderLink } from "@/components/landing/MovingBorder";
+import { Marquee } from "@/components/landing/Marquee";
+import { FlowBeams } from "@/components/landing/FlowBeams";
+import { ThreadDemo } from "@/components/landing/ThreadDemo";
+import { GlowCard } from "@/components/landing/GlowCard";
+import { Compare } from "@/components/landing/Compare";
 
-interface EmailToolCall {
-  type?: string;
-  status?: string;
-  draft?: { to?: string; subject?: string; body?: string };
-}
+import { Mail, Calendar, NotebookText, Kanban, Github, Slack } from "lucide-react";
 
-interface ChatMessage {
-  id: string;
-  conversationId: string;
-  role: "user" | "assistant";
-  content: string;
-  createdAt: string;
-  promptTokens?: number | null;
-  completionTokens?: number | null;
-  totalTokens?: number | null;
-  durationMs?: number | null;
-  toolCalls?: EmailToolCall | null;
-}
+const integrations = [
+  { name: "Gmail", icon: Mail },
+  { name: "Calendar", icon: Calendar },
+  { name: "Notion", icon: NotebookText },
+  { name: "Linear", icon: Kanban },
+  { name: "GitHub", icon: Github },
+  { name: "Slack", icon: Slack },
+];
 
-import { io } from "socket.io-client";
-
-const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api/v1";
-const WS_URL = API.replace(/^http/, "ws").replace(/\/api\/v1$/, "");
-
-type View = "loading" | "login" | "chat";
+const vignettes = [
+  {
+    outcome: "One ping instead of two, for the same problem.",
+    body: "You mentioned a PR needed review. Mimir noticed it was still open two days later, saw the related Linear ticket had started blocking someone else's sprint, and surfaced both together.",
+    span: "sm:col-span-2 sm:row-span-2",
+    size: "large" as const,
+  },
+  {
+    outcome: "The answer was already written down.",
+    body: "A Slack thread went quiet on something you were waiting on. Mimir checked the linked Notion doc, saw it had been updated an hour earlier, and told you — you didn't have to ask again.",
+    span: "sm:col-span-2",
+    size: "small" as const,
+  },
+  {
+    outcome: "Two replies, one summary.",
+    body: "Two people answered the same email thread while you were in back-to-back meetings. Mimir held both, merged the context, and gave you one update instead of two interruptions.",
+    span: "sm:col-span-1",
+    size: "small" as const,
+  },
+  {
+    outcome: "It closed the loop before you opened a tab.",
+    body: "You said to keep an eye on the migration ticket. When the GitHub PR tied to it was approved, Mimir told you it was ready to ship.",
+    span: "sm:col-span-1",
+    size: "small" as const,
+  },
+];
 
 export default function Home() {
-  const [view, setView] = useState<View>("loading");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [conversationId, setConversationId] = useState<string>("");
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [revealed, setRevealed] = useState<number>(0);
-  const [authMode, setAuthMode] = useState<"login" | "register">("login");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [gmailConnected, setGmailConnected] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    (async () => {
-      const res = await fetch(`${API}/conversation`, { credentials: "include" });
-      if (res.status === 401) {
-        setView("login");
-        return;
-      }
-      const data = (await res.json()) as { conversation: { id: string; messages: ChatMessage[] } };
-      setConversationId(data.conversation.id);
-      setMessages(data.conversation.messages);
-      setView("chat");
-    })();
-  }, []);
-
-  // Status probe that also heals: GET /integrations/gmail reconciles a Nango
-  // connection that has no local row (Connect UI has no success redirect). Retried
-  // ~3x to absorb the small lag between Nango persisting the connection and
-  // listConnections seeing it. Errors are ignored — a failed probe just hides the link.
-  const refreshGmailStatus = async () => {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const r = await fetch(`${API}/integrations/gmail`, { credentials: "include" }).catch(() => null);
-      if (r && r.ok) {
-        const d = (await r.json()) as { connected: boolean };
-        setGmailConnected(d.connected);
-        if (d.connected) return;
-      }
-      await new Promise((res) => setTimeout(res, 500));
-    }
-  };
-
-  useEffect(() => {
-    if (view !== "chat") return;
-    refreshGmailStatus();
-  }, [view]);
-
-  const connectGmail = async () => {
-    setError(null);
-    const res = await fetch(`${API}/integrations/gmail/connect`, { credentials: "include" });
-    if (!res.ok) {
-      setError("Couldn't start Gmail connect — try again");
-      return;
-    }
-    const { sessionToken } = (await res.json()) as { sessionToken: string };
-    const { default: Nango } = await import("@nangohq/frontend"); // lazy — keeps the bundle small
-    new Nango({ connectSessionToken: sessionToken }).openConnectUI({
-      onEvent: (event) => {
-        if (event.type === "connect") refreshGmailStatus();
-        if (event.type === "error") setError(event.payload.errorMessage);
-      },
-    });
-  };
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, revealed]);
-
-  useEffect(() => {
-    if (view !== "chat") return;
-    // Long-lived push channel (Phase 2): the browser's live socket. Auth rides the
-    // httpOnly access_token cookie on the handshake. Default reconnect/backoff on drop.
-    const socket = io(WS_URL, { withCredentials: true });
-    let refreshing = false;
-    socket.on("connect", () => console.log("[socket] connected", socket.id));
-    socket.on("disconnect", (reason) => console.log("[socket] disconnected", reason));
-    socket.on("debug", (payload) => console.log("[socket] debug event", payload));
-    // Phase 4.6: an agent delivered a message. Payload is intentionally lightweight
-    // ({conversationId}), so refetch the full thread rather than trusting it.
-    socket.on("new_message", () => {
-      fetch(`${API}/conversation`, { credentials: "include" })
-        .then((r) => (r.ok ? (r.json() as Promise<{ conversation: { id: string; messages: ChatMessage[] } }>) : null))
-        .then((data) => {
-          if (!data) return;
-          setConversationId(data.conversation.id);
-          setMessages(data.conversation.messages);
-          setRevealed(0);
-        })
-        .catch((err) => console.error("[socket] conversation refetch failed", err));
-    });
-    socket.on("connect_error", (err) => {
-      // Only a rejected handshake means the access token is bad — transport blips and
-      // CORS rejections shouldn't trigger a refresh. Refresh at most one at a time:
-      // /auth/refresh rotates the token, so concurrent refreshes from multiple tabs
-      // sharing the cookie race — the loser gets seen as theft and wipes the family.
-      const isAuthError = String(err?.message).toLowerCase().includes("unauthorized");
-      if (!isAuthError || refreshing) return;
-      refreshing = true;
-      fetch(`${API}/auth/refresh`, { method: "POST", credentials: "include" })
-        .then((r) => {
-          if (r.ok) socket.connect();
-        })
-        .catch(() => {})
-        .finally(() => {
-          refreshing = false;
-        });
-    });
-    return () => {
-      socket.disconnect();
-    };
-  }, [view]);
-
-  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-  useEffect(() => {
-    if (!lastAssistant || revealed >= lastAssistant.content.length) return;
-    const t = setTimeout(() => setRevealed((n) => Math.min(n + 2, lastAssistant.content.length)), 10);
-    return () => clearTimeout(t);
-  }, [lastAssistant, revealed]);
-
-  const submitAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError(null);
-    const route = authMode === "login" ? "login" : "register";
-    const res = await fetch(`${API}/auth/${route}`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-    if (!res.ok) {
-      const data = (await res.json()) as { error?: { message?: string } };
-      setAuthError(data.error?.message ?? "Auth failed");
-      return;
-    }
-    setView("loading");
-    const conv = await fetch(`${API}/conversation`, { credentials: "include" });
-    const data = (await conv.json()) as { conversation: { id: string; messages: ChatMessage[] } };
-    setConversationId(data.conversation.id);
-    setMessages(data.conversation.messages);
-    setView("chat");
-  };
-
-  const logout = async () => {
-  await fetch(`${API}/auth/logout`, { method: "POST", credentials: "include" });
-  setView("login");
-  setMessages([]);
-};
-
-const post = async (content: string) => {
-  if (!content || sending || !conversationId) return;
-  setInput("");
-  setSending(true);
-  setError(null);
-  const clientMessageId = crypto.randomUUID();
-  const optimistic: ChatMessage = {
-    id: clientMessageId,
-    conversationId,
-    role: "user",
-    content,
-    createdAt: new Date().toISOString(),
-  };
-  setMessages((m) => [...m, optimistic]);
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetch(`${API}/message`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ conversationId, content, clientMessageId }),
-    });
-    if (res.status === 401) {
-      setView("login");
-      return;
-    }
-    if (res.ok) {
-      // Refetch the whole thread so toolCall statuses (pending/executed/cancelled)
-      // stay truthful — an executed/cancelled draft must drop its buttons.
-      const data = (await fetch(`${API}/conversation`, { credentials: "include" }).then((r) =>
-        r.ok ? (r.json() as Promise<{ conversation: { id: string; messages: ChatMessage[] } }>) : null,
-      )) as { conversation: { id: string; messages: ChatMessage[] } } | null;
-      if (data) {
-        setConversationId(data.conversation.id);
-        setMessages(data.conversation.messages);
-      }
-      setRevealed(0);
-      setSending(false);
-      return;
-    }
-    const body = (await res.json()) as { error?: { message?: string } };
-    if (attempt === 0 && res.status >= 500) continue; // retry same idempotency key
-    setError(body.error?.message ?? "Request failed");
-    setSending(false);
-    return;
-  }
-};
-
-const send = async (e: React.FormEvent) => {
-  e.preventDefault();
-  await post(input.trim());
-};
-
-  if (view === "loading") return <main style={styles.center}><p>Loading…</p></main>;
-
-  if (view === "login") {
-    const googleUrl = new URL(`${API}/auth/google`);
-    return (
-      <main style={styles.center}>
-        <form onSubmit={submitAuth} style={styles.card}>
-          <h1 style={styles.title}>Mimir</h1>
-          {authMode === "login" ? <p>Log in to continue</p> : <p>Create an account</p>}
-          <label>Email
-            <input style={styles.input} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-          </label>
-          <label>Password
-            <input style={styles.input} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-          </label>
-          {authError && <p style={styles.error}>{authError}</p>}
-          <button style={styles.button} type="submit">{authMode === "login" ? "Log in" : "Register"}</button>
-          <button style={styles.button} type="button" onClick={() => setAuthMode(authMode === "login" ? "register" : "login")}>
-            {authMode === "login" ? "Need an account? Register" : "Have an account? Log in"}
-          </button>
-          <a style={styles.button} href={googleUrl.toString()}>Continue with Google</a>
-        </form>
-      </main>
-    );
-  }
-
   return (
-    <main style={styles.fill}>
-      <div style={styles.thread}>
-        <header style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 4 }}>
-          {!gmailConnected && (
-            <button style={{ ...styles.button, fontSize: 12 }} type="button" onClick={connectGmail}>
-              Connect Gmail
-            </button>
-          )}
-          <button style={{ ...styles.button, fontSize: 12 }} type="button" onClick={logout}>Log out</button>
-        </header>
-        {messages.map((m, i) => {
-          const isLast = i === messages.length - 1 && m.role === "assistant";
-          const shown = isLast ? m.content.slice(0, revealed) : m.content;
-          const meta =
-            m.role === "assistant"
-              ? `[${(m.durationMs ?? 0) / 1000}s · ${m.promptTokens ?? 0} in / ${m.completionTokens ?? 0} out]`
-              : m.promptTokens != null
-                ? `[${m.promptTokens} in]`
-                : "";
-          const pendingAction = m.toolCalls?.type === "gmail.send_email" && m.toolCalls.status === "pending";
-          return (
-            <div key={m.id} style={{ ...styles.bubble, alignSelf: m.role === "user" ? "flex-end" : "flex-start" }}>
-              {shown || (m.role === "assistant" && sending ? "…" : "")}
-              {pendingAction && (
-                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                  <button style={styles.button} type="button" disabled={sending} onClick={() => post("send")}>Send</button>
-                  <button style={styles.button} type="button" disabled={sending} onClick={() => post("cancel")}>Cancel</button>
-                </div>
-              )}
-              <div style={styles.meta}>{meta}</div>
-            </div>
-          );
-        })}
-        <div ref={bottomRef} />
-      </div>
-      {error && <p style={styles.error}>{error}</p>}
-      <form onSubmit={send} style={styles.composer}>
-        <input
-          style={{ ...styles.input, flex: 1 }}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Message…"
-          disabled={sending}
-        />
-        <button style={styles.button} type="submit" disabled={sending || !input.trim()}>Send</button>
-      </form>
-    </main>
+    <div className="min-h-screen bg-background">
+      <Nav />
+      <main>
+        <Hero />
+        <IntegrationRow />
+        <Problem />
+        <HowItWorks />
+        <Behaviours />
+        <Continuity />
+        <Trust />
+        <Closing />
+      </main>
+      <Footer />
+    </div>
   );
 }
 
-const styles: Record<string, CSSProperties> = {
-  center: { height: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" },
-  card: { display: "flex", flexDirection: "column", gap: 12, width: 320 },
-  title: { margin: 0 },
-  input: { padding: 8, fontSize: 14, borderRadius: 6, border: "1px solid #888" },
-  button: { padding: 8, fontSize: 14, borderRadius: 6, border: "1px solid #888", cursor: "pointer" },
-  thread: { flex: 1, width: "100%", maxWidth: 640, margin: "0 auto", overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, padding: 16 },
-  bubble: { maxWidth: "75%", padding: "8px 12px", borderRadius: 10, background: "rgba(128,128,128,0.18)", whiteSpace: "pre-wrap" },
-  meta: { fontSize: 11, opacity: 0.5, marginTop: 4 },
-  composer: { width: "100%", maxWidth: 640, margin: "0 auto", padding: 12, display: "flex", gap: 8 },
-  error: { color: "crimson" },
-};
+function Nav() {
+  return (
+    <header className="sticky top-0 z-40 border-b border-border bg-background/80 backdrop-blur-md">
+      <div className="mx-auto flex max-w-5xl items-center justify-end gap-6 px-6 py-4">
+        <nav className="flex shrink-0 items-center gap-6 text-sm text-muted-foreground">
+          <a
+            href="#how"
+            className="hidden transition-colors duration-200 hover:text-foreground sm:inline"
+          >
+            How it works
+          </a>
+          <a
+            href="/login"
+            className="rounded-md border border-border-strong px-3.5 py-1.5 text-foreground transition-colors duration-200 hover:bg-secondary"
+          >
+            Log in
+          </a>
+        </nav>
+      </div>
+    </header>
+  );
+}
+
+function Hero() {
+  return (
+    <section className="relative overflow-hidden border-b border-border">
+      <Spotlight className="inset-x-0 -top-40 h-[36rem]" />
+      <Spotlight
+        className="top-10 right-[-10%] h-[28rem] w-[28rem]"
+        size="50% 50% at 50% 50%"
+        strength={7}
+        duration={30}
+      />
+      <div className="relative mx-auto max-w-5xl px-6 pt-28 pb-24 sm:pt-40 sm:pb-32">
+        <p className="reveal text-sm text-muted-foreground">
+          <span className="text-signal">—</span> An assistant that stays running
+        </p>
+        <h1
+          className="reveal font-condensed mt-7 max-w-3xl text-[2.75rem] leading-[1.02] font-semibold sm:text-6xl md:text-7xl"
+          style={{ animationDelay: "80ms" }}
+        >
+          You say it once.
+          <br />
+          Mimir keeps working on it.
+        </h1>
+        <p
+          className="reveal mt-8 max-w-xl text-lg leading-relaxed text-muted-foreground"
+          style={{ animationDelay: "160ms" }}
+        >
+          Not a chat window you open and close. One continuous assistant that watches the tools you
+          already work in, and speaks up only when something actually matters.
+        </p>
+        <div
+          className="reveal mt-10 flex items-center gap-5"
+          style={{ animationDelay: "240ms" }}
+        >
+          <MovingBorderLink href="/chat">Log in</MovingBorderLink>
+          <span className="text-sm text-muted-foreground">One continuous thread</span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function IntegrationRow() {
+  return (
+    <section className="border-b border-border">
+      <div className="mx-auto flex max-w-5xl flex-col gap-5 px-6 py-10 sm:flex-row sm:items-center sm:gap-8">
+        <span className="shrink-0 text-xs tracking-widest text-muted-foreground uppercase">
+          Already where you work
+        </span>
+        <Marquee className="min-w-0 flex-1" duration={38}>
+          {integrations.map((integration) => (
+            <span
+              key={integration.name}
+              className="flex items-center gap-2 pr-8 text-sm text-muted-foreground transition-colors duration-200 hover:text-foreground"
+            >
+              <integration.icon className="h-4 w-4 shrink-0" aria-hidden="true" strokeWidth={1.5} />
+              {integration.name}
+            </span>
+          ))}
+        </Marquee>
+      </div>
+    </section>
+  );
+}
+
+function Problem() {
+  return (
+    <section className="border-b border-border">
+      <div className="mx-auto max-w-5xl px-6 py-24 sm:py-32">
+        <Stagger className="max-w-2xl" gap={0.1}>
+          <Item as="h2" className="font-condensed text-3xl leading-tight font-semibold sm:text-5xl">
+            The work isn't scattered. Knowing about it is.
+          </Item>
+          <Item as="p" className="mt-6 text-lg leading-relaxed text-muted-foreground">
+            Six tools, all talking at once, none of them talking to each other. Drag across to see
+            the difference.
+          </Item>
+        </Stagger>
+        <Stagger className="mt-12" amount={0.15}>
+          <Item variant="scale">
+            <Compare />
+          </Item>
+        </Stagger>
+      </div>
+    </section>
+  );
+}
+
+function HowItWorks() {
+  return (
+    <section id="how" className="border-b border-border">
+      <div className="mx-auto max-w-5xl px-6 py-24 sm:py-32">
+        <Stagger className="max-w-2xl" gap={0.1}>
+          <Item as="h2" className="font-condensed text-3xl leading-tight font-semibold sm:text-5xl">
+            What it actually does
+          </Item>
+          <Item as="p" className="mt-6 text-lg leading-relaxed text-muted-foreground">
+            You tell Mimir something — a task, something you're waiting on, someone you're expecting
+            to hear back from. It holds it, watches the tools it's connected to, and decides what's
+            worth your attention.
+          </Item>
+        </Stagger>
+
+        <Stagger className="mt-16" amount={0.2}>
+          <Item variant="scale">
+            <FlowBeams marks={integrations} />
+          </Item>
+        </Stagger>
+
+        <Stagger
+          className="mt-16 grid auto-rows-[minmax(0,auto)] gap-4 sm:grid-cols-4"
+          gap={0.1}
+          amount={0.12}
+        >
+          {vignettes.map((vignette) => (
+            <GlowCard key={vignette.outcome} className={vignette.span}>
+              <p
+                className={
+                  "font-condensed font-semibold " +
+                  (vignette.size === "large"
+                    ? "text-2xl leading-snug sm:text-3xl"
+                    : "text-xl leading-snug")
+                }
+              >
+                {vignette.outcome}
+              </p>
+              <p className="mt-4 leading-relaxed text-muted-foreground">{vignette.body}</p>
+              {vignette.size === "large" ? (
+                <p className="mt-auto border-t border-border pt-5 text-xs tracking-widest text-muted-foreground uppercase">
+                  <span className="text-signal">—</span> correlated across GitHub and Linear
+                </p>
+              ) : null}
+            </GlowCard>
+          ))}
+        </Stagger>
+      </div>
+    </section>
+  );
+}
+
+const behaviours = [
+  {
+    title: "It remembers so you don't repeat yourself",
+    body: "Mention a task, a thing you're waiting on, a person you expect to hear back from. Mimir holds it and keeps checking. You never re-ask.",
+  },
+  {
+    title: "It filters before it interrupts",
+    body: "It watches your tools quietly and discards the noise. A reply worth knowing about, a deadline closing in, a PR that needs eyes — those reach you. Nothing else does.",
+  },
+  {
+    title: "It asks when it isn't sure",
+    body: "If two things you mentioned turn out to be the same thing, it checks with you first. It would rather confirm than guess on your behalf.",
+  },
+  {
+    title: "It finds you where you already are",
+    body: "Desktop, browser, a push notification, or a quiet email if you've stepped away. Type to it or say it out loud — same thread either way.",
+  },
+];
+
+function Behaviours() {
+  return (
+    <section className="border-b border-border">
+      <div className="mx-auto max-w-5xl px-6 py-24 sm:py-32">
+        <Stagger
+          className="grid gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-2"
+          gap={0.09}
+          amount={0.12}
+        >
+          {behaviours.map((item, index) => (
+            <Item key={item.title} variant="scale" className="bg-background p-8 sm:p-10">
+              <span className="font-condensed text-sm text-signal">0{index + 1}</span>
+              <h3 className="font-condensed mt-5 text-2xl leading-snug font-semibold">
+                {item.title}
+              </h3>
+              <p className="mt-4 leading-relaxed text-muted-foreground">{item.body}</p>
+            </Item>
+          ))}
+        </Stagger>
+      </div>
+    </section>
+  );
+}
+
+function Continuity() {
+  return (
+    <section className="relative overflow-hidden border-b border-border">
+      <Spotlight
+        className="inset-0"
+        size="50% 60% at 80% 20%"
+        strength={8}
+        duration={26}
+      />
+      <div className="relative mx-auto max-w-5xl px-6 py-24 sm:py-32">
+        <Stagger className="max-w-2xl" gap={0.11}>
+          <Item as="h2" className="font-condensed text-3xl leading-tight font-semibold sm:text-5xl">
+            One thread, never restarted
+          </Item>
+          <Item as="p" className="mt-6 max-w-xl text-lg leading-relaxed text-muted-foreground">
+            Typed or spoken, it's the same conversation. Nothing gets re-explained, and nothing gets
+            handed back to you as a to-do list.
+          </Item>
+        </Stagger>
+        <div className="mt-12">
+          <ThreadDemo />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Trust() {
+  return (
+    <section className="relative overflow-hidden border-b border-border">
+      <div className="grid-texture pointer-events-none absolute inset-0 opacity-60" aria-hidden="true" />
+      {[
+        { top: "18%", left: "12%", delay: 0 },
+        { top: "34%", left: "72%", delay: 1.4 },
+        { top: "62%", left: "28%", delay: 2.6 },
+        { top: "74%", left: "84%", delay: 0.8 },
+        { top: "24%", left: "48%", delay: 3.4 },
+      ].map((star) => (
+        <motion.span
+          key={`${star.top}-${star.left}`}
+          aria-hidden="true"
+          className="pointer-events-none absolute h-1 w-1 rounded-full bg-signal"
+          style={{ top: star.top, left: star.left }}
+          animate={{ opacity: [0, 0.9, 0] }}
+          transition={{ duration: 5, repeat: Infinity, delay: star.delay, ease: "easeInOut" }}
+        />
+      ))}
+      <div className="relative mx-auto max-w-5xl px-6 py-24 sm:py-32">
+        <Stagger className="max-w-2xl" gap={0.1}>
+          <Item as="h2" className="font-condensed text-3xl leading-tight font-semibold sm:text-5xl">
+            You stay in control of what it sees
+          </Item>
+          <Item as="p" className="mt-6 text-lg leading-relaxed text-muted-foreground">
+            Connect one tool or all six. Revoke any of them at any time. Mimir tells you what it
+            acted on and why, and it never takes an irreversible step without asking.
+          </Item>
+        </Stagger>
+        <Stagger className="mt-12 grid gap-4 sm:grid-cols-3" gap={0.1} amount={0.15}>
+          {[
+            ["Per-tool access", "Grant and revoke each connection on its own."],
+            ["Nothing silent", "Every action it takes is written back into your thread."],
+            ["Asks before it acts", "Irreversible steps wait for a yes from you."],
+          ].map(([title, body]) => (
+            <Item
+              key={title}
+              variant="scale"
+              className="rounded-lg border border-border bg-card/40 p-6 backdrop-blur-sm"
+            >
+              <h3 className="font-condensed text-lg font-semibold">{title}</h3>
+              <p className="mt-2.5 text-sm leading-relaxed text-muted-foreground">{body}</p>
+            </Item>
+          ))}
+        </Stagger>
+      </div>
+    </section>
+  );
+}
+
+function Closing() {
+  return (
+    <section id="request" className="relative overflow-hidden border-b border-border">
+      <Spotlight className="inset-x-0 bottom-[-30%] h-[26rem]" strength={9} duration={28} />
+      <div className="relative mx-auto max-w-5xl px-6 py-28 sm:py-36">
+        <Stagger className="max-w-2xl" gap={0.11}>
+          <Item as="h2" className="font-condensed text-4xl leading-[1.05] font-semibold sm:text-6xl">
+            Stop managing your assistant.
+          </Item>
+          <Item as="p" className="mt-6 max-w-xl text-lg leading-relaxed text-muted-foreground">
+            Log in and pick up the one thread that never restarts.
+          </Item>
+          <Item className="mt-10">
+            <MovingBorderLink href="/login">Log in</MovingBorderLink>
+          </Item>
+        </Stagger>
+      </div>
+    </section>
+  );
+}
+
+function Footer() {
+  return (
+    <footer className="mx-auto flex max-w-5xl items-center justify-center gap-4 px-6 py-10 text-sm text-muted-foreground">
+      <span>© {new Date().getFullYear()} Mimir</span>
+    </footer>
+  );
+}
