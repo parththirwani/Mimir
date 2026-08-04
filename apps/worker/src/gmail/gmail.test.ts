@@ -42,7 +42,7 @@ afterAll(async () => {
   await prisma.user.delete({ where: { id: userId } });
 });
 
-describe("fetchEntityData (Plan 5 Task D)", () => {
+describe("fetchEntityData", () => {
   test("no connection row -> ConnectionError(not_connected), no Nango/fetch involved", async () => {
     expect(fetchEntityData(userId, "gmail", "watch my email")).rejects.toThrow(ConnectionError);
   });

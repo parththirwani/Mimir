@@ -31,7 +31,7 @@ async function poll<T>(fn: () => Promise<T>, ok: (t: T) => boolean, timeoutMs = 
   }
 }
 
-describe("Phase 4 end-to-end (real LLM, mocked integration)", () => {
+describe("agent end-to-end (real LLM, mocked integration)", () => {
   // HTTP only — no initSocket/initPubSub. bun runs every test file in ONE process,
   // so those module-level singletons are owned by socket.test.ts / pubsub.test.ts.
   const app = express();
@@ -78,7 +78,7 @@ describe("Phase 4 end-to-end (real LLM, mocked integration)", () => {
     conversationId = (await conv.json()).conversation.id;
     expect(conversationId).toBeTruthy();
 
-    // 3. Delivery — Phase 4.6 publishes on user-events:{userId}; subscribe with a
+    // 3. Delivery — the worker publishes on user-events:{userId}; subscribe with a
     // dedicated connection (a subscribed ioredis client can't run other commands).
     deliverySub = new Redis(process.env.REDIS_URL!, { maxRetriesPerRequest: 1 });
     await deliverySub.subscribe(`user-events:${userId}`);

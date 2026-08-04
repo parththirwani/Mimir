@@ -58,7 +58,7 @@ afterAll(async () => {
   await prisma.user.deleteMany({ where: { id: { in: [userId, syncUserId, hookUserId] } } });
 });
 
-describe("NangoConnectionProvider (Plan 5 Task A)", () => {
+describe("NangoConnectionProvider", () => {
   test("handleCallback resolves the connection by end_user_id tag and stores the row", async () => {
     await provider().handleCallback(userId);
     expect(seen.listConnections).toBe(1);

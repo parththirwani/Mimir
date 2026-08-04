@@ -1,6 +1,6 @@
-// Plan 5 Task A: the ConnectionProvider abstraction. api and worker both consume
-// it, so the interface pays for itself — but keep it minimal: no provider-specific
-// knobs leak out, only the five auth operations the routes/worker need.
+// The ConnectionProvider abstraction. api and worker both consume it, so the
+// interface pays for itself — but keep it minimal: no provider-specific knobs
+// leak out, only the five auth operations the routes/worker need.
 
 export interface ConnectionProvider {
   initiateOAuth(userId: string): Promise<{ sessionToken: string; authorizationUrl: string }>;

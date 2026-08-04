@@ -21,9 +21,9 @@ export interface Classification {
 
 export const ANSWER_DIRECTLY: Classification = { action: "answer_directly", confidence: 0 };
 
-// Plan 4.2.1: structured JSON output {action, targetAgentId, taskDescription, confidence}.
-// Plain JSON prompt + parse, not tool-calls — the OpenRouter wrapper has no tool support
-// and 4.2.2's fallback covers parse failures anyway.
+// Structured JSON output {action, targetAgentId, taskDescription, confidence}.
+// Plain JSON prompt + parse, not tool-calls — the OpenRouter wrapper has no tool
+// support and parse failure falls back to answer_directly.
 const CLASSIFICATION_SYSTEM = [
   "You are the Interaction Agent of a personal automation assistant.",
   'Respond with STRICT JSON only: {"action":"answer_directly"} OR',
@@ -54,7 +54,7 @@ export async function classifyMessage(userId: string, content: string, activeAge
   return parseClassification(result.content);
 }
 
-// Plan 4.2.2: parse failure or confidence < 0.5 => answer_directly.
+// Parse failure or confidence < 0.5 => answer_directly.
 export function parseClassification(raw: string): Classification {
   try {
     const cleaned = raw.replace(/```json|```/g, "").trim();
@@ -70,14 +70,14 @@ export function parseClassification(raw: string): Classification {
   }
 }
 
-// Plan 4.3.1: text-embedding-3-small via OpenRouter (no separate key).
+// text-embedding-3-small via OpenRouter (no separate key).
 export async function embedTask(taskDescription: string): Promise<number[]> {
   const vector = await callEmbeddings(taskDescription);
   if (vector.length === 0) throw new Error("empty embedding returned");
   return vector;
 }
 
-// Plan 4.3.2: pgvector cosine similarity against the user's ACTIVE agents, threshold 0.85.
+// pgvector cosine similarity against the user's ACTIVE agents, threshold 0.85.
 // Split embed (network) from query so the SQL is testable without a live model call.
 // Returns the computed embedding so callers (spawn path) can reuse it instead of
 // paying for a second embed call.
@@ -107,7 +107,7 @@ export async function findDuplicateByVector(userId: string, embedding: number[])
   return top;
 }
 
-// Plan 4.4.2: single tx — insert Agent + insert OutboxEvent. Returns the spawned agent id.
+// Single tx — insert Agent + insert OutboxEvent. Returns the spawned agent id.
 export async function spawnAgent(opts: {
   userId: string;
   ownerConversationId: string;
@@ -122,7 +122,7 @@ export async function spawnAgent(opts: {
         userId: opts.userId,
         ownerConversationId: opts.ownerConversationId,
         taskDescription: opts.taskDescription,
-        entity: "gmail", // ponytail: Phase 4 runs against the mocked integration; Phase 5 derives entity from the integration graph
+        entity: "gmail", // ponytail: runs against the mocked integration; derives entity from the integration graph later
       },
     });
     // embedding column is Unsupported in Prisma — raw write only.

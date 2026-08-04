@@ -18,8 +18,8 @@ export interface EntityData {
   items?: unknown[];
 }
 
-// Plan 5 Task D: real Gmail REST reads behind the mock's exact output shape, so
-// executeAgent's LLM prompt path is untouched.
+// Real Gmail REST reads behind the mock's exact output shape, so executeAgent's
+// LLM prompt path is untouched.
 export async function fetchEntityData(userId: string, entity: string | null, taskDescription: string): Promise<EntityData> {
   const e = (entity ?? "").toLowerCase();
   if (!(e.includes("gmail") || /email|mail/i.test(taskDescription))) {
@@ -109,7 +109,7 @@ function encodeSubject(subject: string): string {
   return /^[\x20-\x7e]*$/.test(subject) ? subject : `=?UTF-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`;
 }
 
-// Plan 5.4.1's HTTP mapping. ConnectionError is fail-fast (reconnect, no retry);
+// HTTP error mapping. ConnectionError is fail-fast (reconnect, no retry);
 // ProviderError is rethrown into BullMQ's attempts:5 backoff.
 interface GmailFetchOptions {
   method?: string;

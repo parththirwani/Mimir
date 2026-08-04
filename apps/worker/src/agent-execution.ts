@@ -11,12 +11,12 @@ import {
 import type { LlmMessage } from "@mimir/shared-types";
 import { ConnectionError, GMAIL_INTEGRATION } from "@mimir/connection-provider";
 import type { Job } from "bullmq";
-import { fetchEntityData } from "./gmail.js";
+import { fetchEntityData } from "./gmail/gmail.js";
 import { publishUserEvent } from "./redis.js";
 
 const prisma = getPrismaClient();
 
-// Plan 4.5.1: context = contextSummary (if set) + last N AgentEvents, capped at
+// Context = contextSummary (if set) + last N AgentEvents, capped at
 // AGENT_CONTEXT_MAX_TOKENS. Rough token estimate (chars / 4) — good enough for a
 // budget cap; exact tokenizer is unnecessary until the cap measurably bites.
 async function loadContext(agentId: string, context?: string): Promise<{ systemNote: string; history: LlmMessage[] }> {
@@ -52,9 +52,9 @@ async function loadContext(agentId: string, context?: string): Promise<{ systemN
   return { systemNote, history };
 }
 
-// Plan 4.5.4: once event history exceeds the budget (count OR estimated token
-// size — events embed full LLM output, so ~4 events can already fill the
-// token cap and loadContext truncates), fold the events that no longer fit into
+// Once event history exceeds the budget (count OR estimated token size — events
+// embed full LLM output, so ~4 events can already fill the token cap and
+// loadContext truncates), fold the events that no longer fit into
 // Agent.contextSummary and delete them, so they aren't re-counted every run.
 export async function foldOldEvents(agentId: string): Promise<void> {
   const agent = await prisma.agent.findUnique({ where: { id: agentId } });
@@ -107,8 +107,8 @@ async function safeFold(agentId: string): Promise<void> {
   }
 }
 
-// Plan 4.7.1: structured {surface, rationale, category}. Parse failure or low
-// confidence -> don't surface (safe default: an unparseable filter shouldn't spam).
+// Structured {surface, rationale, category}. Parse failure or low confidence ->
+// don't surface (safe default: an unparseable filter shouldn't spam).
 interface FilterVerdict {
   surface: boolean;
   rationale: string;
@@ -153,8 +153,8 @@ export async function filterVerdict(userId: string, content: string): Promise<Fi
   }
 }
 
-// Plan 4.5.2-4.6: the real agent-jobs processor. Postgres writes (AgentEvent +
-// Message) complete BEFORE any publish — no publish-before-write.
+// The agent-jobs processor. Postgres writes (AgentEvent + Message) complete
+// BEFORE any publish — no publish-before-write.
 export async function executeAgent(job: Job): Promise<void> {
   const { agentId, trigger, context } = job.data as { agentId: string; trigger?: string; context?: string };
   getLogger().info({ agentId, jobId: job.id }, "agent job started");
@@ -167,19 +167,19 @@ export async function executeAgent(job: Job): Promise<void> {
 
   const { systemNote, history } = await loadContext(agentId, context);
 
-  // Plan 5 Task D: real integration fetch. ConnectionError fails fast to a
-  // surfaced reconnect message (no silent retry loop); ProviderError and
-  // anything else rethrow into BullMQ's attempts:5 exponential backoff.
+  // Real integration fetch. ConnectionError fails fast to a surfaced reconnect
+  // message (no silent retry loop); ProviderError and anything else rethrow into
+  // BullMQ's attempts:5 exponential backoff.
   let data: unknown;
   try {
     data = await fetchEntityData(agent.userId, agent.entity, agent.taskDescription);
   } catch (e) {
     if (!(e instanceof ConnectionError)) throw e;
     getLogger().warn({ agentId, err: e }, "integration not usable; surfacing reconnect");
-    // ponytail: plan 5.4.1's per-kind retry counts ("retry 3x / retry once then
-    // surface") aren't expressible in BullMQ's fixed per-job attempt count; the
-    // uniform 5x policy plus this ConnectionError fail-fast covers it. Split into
-    // per-kind policies only if a provider starts burning retries.
+    // ponytail: per-kind retry counts ("retry 3x / retry once then surface")
+    // aren't expressible in BullMQ's fixed per-job attempt count; the uniform 5x
+    // policy plus this ConnectionError fail-fast covers it. Split into per-kind
+    // policies only if a provider starts burning retries.
     await prisma.integrationConnection.updateMany({
       where: { userId: agent.userId, provider: GMAIL_INTEGRATION },
       data: { status: "expired" },
@@ -220,7 +220,7 @@ export async function executeAgent(job: Job): Promise<void> {
 
   await prisma.agent.update({ where: { id: agentId }, data: { lastActiveAt: new Date() } });
 
-  // Plan 4.7.2: the discard path is never skipped — write surfaced OR discarded.
+  // The discard path is never skipped — write surfaced OR discarded.
   const verdict = userTriggered(trigger)
     ? { surface: true, rationale: "user-triggered", category: "actionable" as const }
     : await filterVerdict(agent.userId, result.content);
@@ -240,14 +240,14 @@ export async function executeAgent(job: Job): Promise<void> {
   });
   getLogger().info({ agentId, eventType, category: verdict.category }, "agent result filtered");
 
-  // Plan 4.7.3: only surfaced events proceed to the write+publish path.
+  // Only surfaced events proceed to the write+publish path.
   if (!verdict.surface) {
     await trackEvent(agent.userId, "agent_event_discarded", { agentId, category: verdict.category });
     await safeFold(agentId);
     return;
   }
 
-  // Plan 4.5.3: append to the owner conversation AFTER the AgentEvent write.
+  // Append to the owner conversation AFTER the AgentEvent write.
   const message = await prisma.message.create({
     data: {
       conversationId: agent.ownerConversationId,
@@ -263,7 +263,7 @@ export async function executeAgent(job: Job): Promise<void> {
   });
   await trackEvent(agent.userId, "agent_event_surfaced", { agentId, conversationId: agent.ownerConversationId });
 
-  // Plan 4.6.1: publish only now, after the DB writes committed.
+  // Publish only now, after the DB writes committed.
   try {
     await publishUserEvent(agent.userId, "new_message", { conversationId: agent.ownerConversationId, messageId: message.id });
     getLogger().info({ agentId, messageId: message.id }, "agent result published");

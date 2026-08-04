@@ -7,7 +7,7 @@ process.env.JWT_SECRET = "email-action-test-secret";
 
 const { parseEmailAction, parseResolveIntent, emailActionHint } = await import("./email-action.js");
 
-describe("parseEmailAction (Phase 5.x structured draft proposal)", () => {
+describe("parseEmailAction (structured draft proposal)", () => {
   test("send_email passes through to/subject/body", () => {
     expect(parseEmailAction('{"intent":"send_email","to":"alice@example.com","subject":"Hi","body":"body text"}')).toEqual({
       intent: "send_email",

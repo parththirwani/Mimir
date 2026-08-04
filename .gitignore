@@ -43,3 +43,6 @@ implementation-plan-final.md
 
 # Prisma generated client
 packages/backend-core/src/generated/
+
+# LLM prompts (deploy via volumes/CI, see prompts.example)
+apps/api/src/prompts/

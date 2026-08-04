@@ -1,13 +1,13 @@
 import { getConfig, getLogger, getPrismaClient } from "@mimir/backend-core";
 import { NangoConnectionProvider } from "@mimir/connection-provider";
 import { Router } from "express";
-import { requireAuth } from "./auth.js";
+import { requireAuth } from "./auth/auth.js";
 
 const cfg = getConfig();
 const prisma = getPrismaClient();
 
-// Plan 5 Task C: Nango-backed Gmail OAuth. Config-only values are injected from
-// getConfig() — the provider package itself stays dependency-free.
+// Nango-backed Gmail OAuth. Config-only values are injected from getConfig() —
+// the provider package itself stays dependency-free.
 function gmailProvider(): NangoConnectionProvider {
   return new NangoConnectionProvider({
     secretKey: cfg.NANGO_SECRET_KEY,

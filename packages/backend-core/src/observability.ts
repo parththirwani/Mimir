@@ -10,7 +10,7 @@ import {
   ATTR_SERVICE_NAME,
   ATTR_SERVICE_NAMESPACE,
 } from "@opentelemetry/semantic-conventions";
-import { getConfig } from "./config.js";
+import { getConfig } from "./config/config.js";
 
 // Module-scope side effect: this file MUST be imported before prisma so the
 // Prisma instrumentation registers before that module loads (see app entrypoints).

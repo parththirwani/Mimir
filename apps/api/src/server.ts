@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import express from "express";
 import passport from "passport";
 import { setupExpressErrorHandler } from "@sentry/node";
-import { authRouter } from "./auth.js";
+import { authRouter } from "./auth/auth.js";
 import { integrationsRouter } from "./integrations.js";
 import { messageRouter } from "./message.js";
 import { redis } from "./redis.js";

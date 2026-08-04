@@ -2,20 +2,20 @@ import type { Server as HttpServer } from "node:http";
 import { getConfig, getLogger } from "@mimir/backend-core";
 import type { Redis } from "ioredis";
 import { Server } from "socket.io";
-import { parseCookies, verifyAccessToken } from "./tokens.js";
+import { parseCookies, verifyAccessToken } from "./auth/tokens.js";
 
 const cfg = getConfig();
 
-// ponytail: single-instance in-memory socket registry. Phase 10.1 replaces this
-// with Redis (SADD user-sockets:{userId} + TTL heartbeat) and the socket.io Redis
+// ponytail: single-instance in-memory socket registry. Multi-instance would need
+// Redis (SADD user-sockets:{userId} + TTL heartbeat) and the socket.io Redis
 // adapter; don't harden this map for multi-instance.
 const socketsByUser = new Map<string, Set<string>>();
 
 let io: Server | null = null;
 
-// Attaches socket.io to the http server created in 0.3 (the same one express uses),
-// authenticating each handshake with the access_token cookie and tracking the
-// user's live sockets so Phase 3.3's pub/sub can push to them.
+// Attaches socket.io to the same http server express uses, authenticating each
+// handshake with the access_token cookie and tracking the user's live sockets so
+// pub/sub can push to them.
 export function initSocket(server: HttpServer): void {
   const origins = [cfg.WEB_APP_URL, "http://localhost:3000"].filter((o): o is string => Boolean(o));
   io = new Server(server, { cors: { origin: origins, credentials: true } });
@@ -47,7 +47,7 @@ export function initSocket(server: HttpServer): void {
   });
 }
 
-// Phase 3.3's consumer: look up a user's live sockets and emit to all of them.
+// Look up a user's live sockets and emit to all of them.
 export function emitToUser(userId: string, event: string, payload: unknown): number {
   const ids = socketsByUser.get(userId);
   if (!io || !ids || ids.size === 0) return 0;
@@ -55,9 +55,9 @@ export function emitToUser(userId: string, event: string, payload: unknown): num
   return ids.size;
 }
 
-// Plan 3.2/3.3: worker publishes on `user-events:{userId}` (channel convention),
-// we subscribe here and push to the user's sockets. Pattern subscribe needs its
-// own connection — a subscribed ioredis client can't run normal commands.
+// Worker publishes on `user-events:{userId}`; subscribe here and push to the
+// user's sockets. Pattern subscribe needs its own connection — a subscribed
+// ioredis client can't run normal commands.
 let pubsubStarted = false;
 export function initPubSub(subscriber: Redis): void {
   if (pubsubStarted) return;
@@ -73,9 +73,8 @@ export function initPubSub(subscriber: Redis): void {
       getLogger().warn({ channel, message }, "dropping non-JSON pub/sub payload");
       return;
     }
-    // Payloads carry their own event name (Phase 4.6: {event:'new_message',...});
-    // emit on that name so the web client can wire per-event handlers. Falls back
-    // to the historical "debug" event for the Phase 3 manual-publish checkpoint.
+    // Payloads carry their own event name ({event:'new_message',...}); emit on
+    // that name so the web client can wire per-event handlers. Falls back to "debug".
     const eventName = typeof parsed.event === "string" ? parsed.event : "debug";
     const delivered = emitToUser(userId, eventName, parsed.payload ?? parsed);
     getLogger().info({ userId, eventName, delivered }, "pub/sub event forwarded to sockets");

@@ -10,7 +10,7 @@ const { ANSWER_DIRECTLY, findDuplicateByVector, parseClassification } = await im
 
 const prisma = getPrismaClient();
 
-describe("parseClassification (Plan 4.2.2)", () => {
+describe("parseClassification", () => {
   test("valid spawn_agent with confidence >= 0.5 is accepted", () => {
     const c = parseClassification('{"action":"spawn_agent","targetAgentId":null,"taskDescription":"check email","confidence":0.9}');
     expect(c).toEqual({ action: "spawn_agent", taskDescription: "check email", confidence: 0.9 });
@@ -39,7 +39,7 @@ describe("parseClassification (Plan 4.2.2)", () => {
   });
 });
 
-describe("pgvector dedup query (Plan 4.3.2)", () => {
+describe("pgvector dedup query", () => {
   const userId = `dedup-user-${Date.now()}`;
   const agentId = `dedup-agent-${Date.now()}`;
   // Two 1536-dim vectors (matches the column). Same-direction vector => similarity

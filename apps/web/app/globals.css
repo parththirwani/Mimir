@@ -145,6 +145,21 @@
   }
 }
 
+/* Word-by-word streaming inside parsed markdown. */
+.md-run {
+  display: contents;
+}
+
+.md-word {
+  display: inline-block;
+  white-space: pre;
+  animation: reveal-in 500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.md-ws {
+  white-space: pre;
+}
+
 @keyframes border-spin {
   to {
     transform: rotate(1turn);

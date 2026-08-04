@@ -46,7 +46,7 @@ async function poll<T>(fn: () => Promise<T>, ok: (t: T) => boolean, timeoutMs = 
   }
 }
 
-describe("outbox relay (Plan 4.4.3)", () => {
+describe("outbox relay", () => {
   test("an unprocessed OutboxEvent row is enqueued to agent-jobs and marked processed", async () => {
     const row = await prisma.outboxEvent.create({
       data: { eventType: "spawn_agent", payload: { agentId, trigger: "user_message" } },

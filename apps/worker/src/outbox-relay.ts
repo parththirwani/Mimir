@@ -3,10 +3,10 @@ import { agentJobs, retryPolicy } from "./queues.js";
 
 const prisma = getPrismaClient();
 
-// Plan 4.4.3: poll OutboxEvent for unprocessed rows, enqueue the real BullMQ job,
-// then mark processedAt. Polling (not a stream) is what makes this crash-safe:
-// a Redis outage mid-spawn loses nothing — the row stays unprocessed until the
-// next tick. jobId = outbox row id so BullMQ dedupes a re-polled row.
+// Poll OutboxEvent for unprocessed rows, enqueue the real BullMQ job, then mark
+// processedAt. Polling (not a stream) is what makes this crash-safe: a Redis
+// outage mid-spawn loses nothing — the row stays unprocessed until the next tick.
+// jobId = outbox row id so BullMQ dedupes a re-polled row.
 // (BullMQ 6 forbids ':' in custom job IDs, hence the '-' separator.)
 // `queue` is injectable so tests can hand in their own connection.
 export async function drainOutbox(queue = agentJobs, batchSize = 50): Promise<number> {
@@ -39,8 +39,7 @@ export async function drainOutbox(queue = agentJobs, batchSize = 50): Promise<nu
   return enqueued;
 }
 
-// Plan 4.4.3: the relay loop. Every few seconds, drain unprocessed rows.
-// Returns a stop handle for tests.
+// The relay loop: every few seconds, drain unprocessed rows. Returns a stop handle.
 export function startOutboxRelay(intervalMs = 3000): () => void {
   let running = true;
   void (async () => {

@@ -2,8 +2,8 @@ import { AGENT_DORMANCY_DAYS, getLogger, getPrismaClient } from "@mimir/backend-
 
 const prisma = getPrismaClient();
 
-// Plan 4.8.1: daily sweep — agents with no AgentEvent in AGENT_DORMANCY_DAYS become dormant.
-// Excluded from dedup candidates (agent.ts filters status='active') and Phase 6 polling.
+// Daily sweep: agents with no AgentEvent in AGENT_DORMANCY_DAYS become dormant.
+// Excluded from dedup candidates (agent.ts filters status='active').
 export async function runDormancySweep(): Promise<number> {
   const cutoff = new Date(Date.now() - AGENT_DORMANCY_DAYS * 24 * 60 * 60 * 1000);
   const result = await prisma.$executeRaw`

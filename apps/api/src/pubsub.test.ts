@@ -41,7 +41,7 @@ function connect(token: string): Promise<Socket> {
   });
 }
 
-describe("pub/sub -> socket (Plan 3.2/3.3)", () => {
+describe("pub/sub -> socket", () => {
   test("worker publish on user-events:{userId} reaches that user's socket on the payload's event name", async () => {
     const token = await signAccessToken("user-1", "socket-test-secret");
     const socket = await connect(token);

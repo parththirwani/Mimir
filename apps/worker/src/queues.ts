@@ -1,10 +1,11 @@
-import { getConfig, getLogger } from "@mimir/backend-core";
+import { getConfig, getLogger, MAIL_POLL_CRON } from "@mimir/backend-core";
 import { Queue, Worker, type Job, type JobsOptions } from "bullmq";
 import { executeAgent } from "./agent-execution.js";
 import { runDormancySweep } from "./dormancy.js";
+import { pollImportantMail } from "./mail-poll.js";
 
 // ponytail: queue name constants live in worker until a producer needs them
-// elsewhere (api's Phase 6 webhook route); move to @mimir/backend-core then.
+// elsewhere; move to @mimir/backend-core then.
 export const AGENT_JOBS = "agent-jobs";
 export const AGENT_TRIGGERS = "agent-triggers";
 export const WEBHOOK_PROCESSING = "webhook-processing";
@@ -13,7 +14,6 @@ export const FAILED_AGENT_JOBS = "failed-agent-jobs";
 const cfg = getConfig();
 const connection = { url: cfg.REDIS_URL, maxRetriesPerRequest: null };
 
-// Plan 3.1.1/3.1.3 retry policy — per-job defaults; values are final per the plan.
 export const retryPolicy: JobsOptions = {
   attempts: 5,
   backoff: { type: "exponential", delay: 5000 },
@@ -24,20 +24,17 @@ export const agentTriggers = new Queue(AGENT_TRIGGERS, { connection });
 export const webhookProcessing = new Queue(WEBHOOK_PROCESSING, { connection });
 export const failedAgentJobs = new Queue(FAILED_AGENT_JOBS, { connection });
 
-// Plan 3.1.3: the explicit `${provider}:${externalId}` job ID is the webhook
-// idempotency mechanism — never let BullMQ auto-generate an ID here.
+// The explicit `${provider}:${externalId}` job ID is the webhook idempotency
+// mechanism — never let BullMQ auto-generate an ID here.
 export function addWebhookJob(provider: string, externalId: string, webhookEventId: string): Promise<Job> {
   return webhookProcessing.add("process", { webhookEventId }, { ...retryPolicy, jobId: `${provider}:${externalId}` });
 }
 
-// Plan 3.1: no-op processors prove the queues function in isolation. Phase 4/6
-// replace them with the real handlers.
 async function noop(job: Job): Promise<void> {
   getLogger().info({ queue: job.queueName, id: job.id, data: job.data }, "job processed (no-op)");
 }
 
-// Plan 4.8.1: the dormancy sweep is a daily repeatable job on agent-triggers.
-// BullMQ 6 API: a job scheduler (upsert is idempotent across worker restarts).
+// Daily repeatable job on agent-triggers; upsert is idempotent across restarts.
 export async function scheduleDormancySweep(): Promise<void> {
   await agentTriggers.upsertJobScheduler(
     "dormancy-sweep",
@@ -46,14 +43,29 @@ export async function scheduleDormancySweep(): Promise<void> {
   );
 }
 
-// agent-triggers processor: dormancy sweep is the only real job for now; anything
-// else is Phase 6's per-connection polling, still a no-op.
-async function agentTriggerProcessor(job: Job): Promise<void> {
-  if (job.name === "dormancy-sweep") {
-    await runDormancySweep();
-    return;
+// Fixed-cadence inbox sweep; upserts alongside dormancy on the same scheduler.
+export async function scheduleMailPollSweep(): Promise<void> {
+  await agentTriggers.upsertJobScheduler(
+    "mail-poll-sweep",
+    { pattern: MAIL_POLL_CRON, immediately: false },
+    { name: "mail-poll-sweep", data: { poll: true } },
+  );
+}
+
+// agent-triggers processor: dormancy + mail-poll sweeps are the only real jobs.
+// Exported so tests can exercise it on a throwaway queue (the real
+// agent-triggers queue may be consumed by a live dev worker during tests).
+export async function agentTriggerProcessor(job: Job): Promise<void> {
+  switch (job.name) {
+    case "dormancy-sweep":
+      await runDormancySweep();
+      return;
+    case "mail-poll-sweep":
+      await pollImportantMail();
+      return;
+    default:
+      return noop(job);
   }
-  return noop(job);
 }
 
 export function wireDlq<D, R, N extends string>(worker: Worker<D, R, N>): void {

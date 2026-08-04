@@ -1,7 +1,7 @@
 import { SpanStatusCode } from "@opentelemetry/api";
 import { readFileSync } from "node:fs";
 import type { ChatResult, LlmMessage } from "@mimir/shared-types";
-import { getConfig } from "./config.js";
+import { getConfig } from "./config/config.js";
 import { getLogger } from "./logger.js";
 import { tracer } from "./observability.js";
 
@@ -204,7 +204,7 @@ export async function fetchGenerationCost(generationId: string): Promise<number>
 }
 
 // OpenRouter's /embeddings endpoint — OpenAI-compatible. No retry beyond the
-// single attempt; Phase 4.3 dedup treats a failed embed as "no match" upstream.
+// single attempt; dedup treats a failed embed as "no match" upstream.
 export async function callEmbeddings(text: string): Promise<number[]> {
   const apiKey = getConfig().OPENROUTER_API_KEY;
   if (!apiKey) throw new NotConfiguredError();

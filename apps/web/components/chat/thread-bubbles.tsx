@@ -1,11 +1,13 @@
-import { TextGenerate } from "@/components/chat/motion";
 import { Reveal } from "@/components/chat/motion";
+import { Markdown } from "@/components/chat/markdown";
 import type { ThreadMessage } from "@/lib/thread";
 import { cn } from "@/lib/utils";
 
 type Props = {
   messages: ThreadMessage[];
+  /** The message currently revealing word-by-word, if any. */
   streamingId: string | null;
+  /** Called when the streaming message finished revealing. */
   onStreamDone: () => void;
   /** Approve a pending action (e.g. a gmail draft): "send" or "cancel". */
   onAction?: (id: string, action: "send" | "cancel") => void;
@@ -49,8 +51,10 @@ export function ThreadBubbles({ messages, streamingId, onStreamDone, onAction }:
                   sameRun && (isMimir ? "rounded-tl-md" : "rounded-tr-md"),
                 )}
               >
-                {isMimir && isStreaming ? (
-                  <TextGenerate text={message.text} onDone={onStreamDone} />
+                {isMimir ? (
+                  <Markdown streaming={isStreaming} onDone={onStreamDone}>
+                    {message.text}
+                  </Markdown>
                 ) : (
                   message.text
                 )}

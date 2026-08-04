@@ -10,7 +10,7 @@ import {
 import { messageSchema } from "@mimir/zod-schemas";
 import { ConnectionError } from "@mimir/connection-provider";
 import { Router } from "express";
-import { requireAuth } from "./auth.js";
+import { requireAuth } from "./auth/auth.js";
 import { mapLLMError } from "./errors.js";
 import { GMAIL_INTEGRATION } from "@mimir/connection-provider";
 import {
@@ -27,7 +27,7 @@ import {
   proposeEmailAction,
   resolvePendingAction,
   sendPendingEmail,
-} from "./email-action.js";
+} from "./email/email-action.js";
 import {
   classifyMessage,
   embedTask,
@@ -195,102 +195,6 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     return;
   }
 
-  // Phase 4: Interaction Agent classifies the intent. spawn_agent delegates to an
-  // execution agent (dedup -> outbox); answer_directly falls through to the chat flow.
-  const classification = await classifyMessage(userId, content, await listActiveAgents(userId));
-  if (classification.action === "spawn_agent" && classification.taskDescription) {
-    await trackEvent(userId, "agent_spawn_classified", {
-      conversationId,
-      confidence: classification.confidence,
-      targetAgentId: classification.targetAgentId ?? null,
-    });
-
-    // Plan 4.2.1: targetAgentId means "reuse this existing agent" — trigger it,
-    // never spawn a duplicate next to it.
-    if (classification.targetAgentId) {
-      const target = await prisma.agent.findFirst({
-        where: { id: classification.targetAgentId, userId, status: "active" },
-      });
-      if (target) {
-        await prisma.outboxEvent.create({
-          data: {
-            eventType: "retarget_agent",
-            payload: { agentId: target.id, trigger: "user_message", context: content },
-          },
-        });
-        getLogger().info({ agentId: target.id, conversationId }, "existing agent retargeted via outbox");
-        const reply = await prisma.message.create({
-          data: {
-            conversationId,
-            role: "assistant",
-            content: `I'll use your existing agent for: "${target.taskDescription}". I'll surface anything relevant here.`,
-            status: "complete",
-            parentMessageId: userMsg.id,
-          },
-        });
-        res.status(200).json({
-          message: {
-            id: reply.id,
-            conversationId,
-            role: "assistant",
-            content: reply.content,
-            createdAt: reply.createdAt,
-          },
-          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          latencyMs: 0,
-        });
-        return;
-      }
-    }
-
-    const { duplicate, embedding: dedupEmbedding } = await findDuplicateAgent(userId, classification.taskDescription);
-    let ack: string;
-    if (duplicate) {
-      ack = `It looks like you already have an agent watching something very similar: "${duplicate.taskDescription}". Want me to reuse that one, or set up a new one?`;
-    } else {
-      // dedupEmbedding is set when findDuplicateAgent's embed succeeded; only
-      // re-embed on the rare failure path (dedup degrades to no-match).
-      let embedding = dedupEmbedding;
-      if (!embedding) {
-        try {
-          embedding = await embedTask(classification.taskDescription);
-        } catch (e) {
-          getLogger().error({ err: e }, "embedding failed; refusing to spawn agent");
-          const mapped = mapLLMError(e);
-          res.status(mapped.status).json({ error: { code: mapped.code, message: mapped.message } });
-          return;
-        }
-      }
-      const { agentId } = await spawnAgent({
-        userId,
-        ownerConversationId: conversationId,
-        taskDescription: classification.taskDescription,
-        embedding,
-        context: content,
-      });
-      await trackEvent(userId, "agent_spawned", { conversationId, agentId });
-      getLogger().info({ agentId, conversationId }, "agent spawned via outbox");
-      ack = `Done — I've set up an agent to: "${classification.taskDescription}". I'll surface anything relevant here.`;
-    }
-    const reply = await prisma.message.create({
-      data: { conversationId, role: "assistant", content: ack, status: "complete", parentMessageId: userMsg.id },
-    });
-    getLogger().info({ conversationId, duplicate: Boolean(duplicate) }, "agent spawn acknowledged");
-    res.status(200).json({
-      message: {
-        id: reply.id,
-        conversationId,
-        role: "assistant",
-        content: reply.content,
-        createdAt: reply.createdAt,
-      },
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-      latencyMs: 0,
-      possibleDuplicateOf: duplicate?.id,
-    });
-    return;
-  }
-
   // Context: prior assistant/user turns so the reply is a conversation, not a one-shot.
   const history = await prisma.message.findMany({
     where: { conversationId, role: { in: ["user", "assistant"] } },
@@ -299,30 +203,33 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
   });
   const messages = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
-  // Phase 5.x: email write/send requests (interactive chat only — background
-  // agents stay watch-only). A cheap keyword gate guards the extra structured
-  // LLM call; a real send needs Gmail, so short-circuit to a connect prompt.
+  // Email write/send requests run BEFORE the interaction-agent classification so
+  // "send an email to X" is never captured by spawn_agent (execution agents stay
+  // watch-only by design). A cheap keyword gate guards the extra structured LLM
+  // call; non-send email mentions ("watch my email for ...") fall through to the
+  // interaction agent below.
   if (emailActionHint(content)) {
-    const gmailConnected = await prisma.integrationConnection.findFirst({ where: { userId, provider: GMAIL_INTEGRATION } });
-    if (!gmailConnected) {
-      const reply = await prisma.message.create({
-        data: {
-          conversationId,
-          role: "assistant",
-          content: "Connect Gmail first, then I can write and send email for you.",
-          status: "complete",
-          parentMessageId: userMsg.id,
-        },
-      });
-      res.status(200).json({
-        message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
-        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-        latencyMs: 0,
-      });
-      return;
-    }
     const proposal = await proposeEmailAction(userId, [...messages, { role: "user", content }]);
     if (proposal.intent === "send_email") {
+      // A real send needs Gmail — short-circuit to a connect prompt before drafting.
+      const gmailConnected = await prisma.integrationConnection.findFirst({ where: { userId, provider: GMAIL_INTEGRATION } });
+      if (!gmailConnected) {
+        const reply = await prisma.message.create({
+          data: {
+            conversationId,
+            role: "assistant",
+            content: "Connect Gmail first, then I can write and send email for you.",
+            status: "complete",
+            parentMessageId: userMsg.id,
+          },
+        });
+        res.status(200).json({
+          message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          latencyMs: 0,
+        });
+        return;
+      }
       if (!EMAIL_TO_RE.test(proposal.to) || !proposal.subject || !proposal.body) {
         const reply = await prisma.message.create({
           data: {
@@ -427,6 +334,102 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       });
       return;
     }
+  }
+
+  // Interaction Agent classifies the intent. spawn_agent delegates to an
+  // execution agent (dedup -> outbox); answer_directly falls through to the chat flow.
+  const classification = await classifyMessage(userId, content, await listActiveAgents(userId));
+  if (classification.action === "spawn_agent" && classification.taskDescription) {
+    await trackEvent(userId, "agent_spawn_classified", {
+      conversationId,
+      confidence: classification.confidence,
+      targetAgentId: classification.targetAgentId ?? null,
+    });
+
+    // targetAgentId means "reuse this existing agent" — trigger it,
+    // never spawn a duplicate next to it.
+    if (classification.targetAgentId) {
+      const target = await prisma.agent.findFirst({
+        where: { id: classification.targetAgentId, userId, status: "active" },
+      });
+      if (target) {
+        await prisma.outboxEvent.create({
+          data: {
+            eventType: "retarget_agent",
+            payload: { agentId: target.id, trigger: "user_message", context: content },
+          },
+        });
+        getLogger().info({ agentId: target.id, conversationId }, "existing agent retargeted via outbox");
+        const reply = await prisma.message.create({
+          data: {
+            conversationId,
+            role: "assistant",
+            content: `I'll use your existing agent for: "${target.taskDescription}". I'll surface anything relevant here.`,
+            status: "complete",
+            parentMessageId: userMsg.id,
+          },
+        });
+        res.status(200).json({
+          message: {
+            id: reply.id,
+            conversationId,
+            role: "assistant",
+            content: reply.content,
+            createdAt: reply.createdAt,
+          },
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          latencyMs: 0,
+        });
+        return;
+      }
+    }
+
+    const { duplicate, embedding: dedupEmbedding } = await findDuplicateAgent(userId, classification.taskDescription);
+    let ack: string;
+    if (duplicate) {
+      ack = `It looks like you already have an agent watching something very similar: "${duplicate.taskDescription}". Want me to reuse that one, or set up a new one?`;
+    } else {
+      // dedupEmbedding is set when findDuplicateAgent's embed succeeded; only
+      // re-embed on the rare failure path (dedup degrades to no-match).
+      let embedding = dedupEmbedding;
+      if (!embedding) {
+        try {
+          embedding = await embedTask(classification.taskDescription);
+        } catch (e) {
+          getLogger().error({ err: e }, "embedding failed; refusing to spawn agent");
+          const mapped = mapLLMError(e);
+          res.status(mapped.status).json({ error: { code: mapped.code, message: mapped.message } });
+          return;
+        }
+      }
+      const { agentId } = await spawnAgent({
+        userId,
+        ownerConversationId: conversationId,
+        taskDescription: classification.taskDescription,
+        embedding,
+        context: content,
+      });
+      await trackEvent(userId, "agent_spawned", { conversationId, agentId });
+      getLogger().info({ agentId, conversationId }, "agent spawned via outbox");
+      ack = `Done — I've set up an agent to: "${classification.taskDescription}". I'll surface anything relevant here.`;
+    }
+    const reply = await prisma.message.create({
+      data: { conversationId, role: "assistant", content: ack, status: "complete", parentMessageId: userMsg.id },
+    });
+    getLogger().info({ conversationId, duplicate: Boolean(duplicate) }, "agent spawn acknowledged");
+    res.status(200).json({
+      message: {
+        id: reply.id,
+        conversationId,
+        role: "assistant",
+        content: reply.content,
+        createdAt: reply.createdAt,
+      },
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      latencyMs: 0,
+      possibleDuplicateOf: duplicate?.id,
+    });
+    return;
   }
 
   let result;

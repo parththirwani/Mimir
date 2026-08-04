@@ -6,7 +6,7 @@ process.env.DATABASE_URL = "postgres://mimir:mimir@localhost:5434/mimir";
 process.env.REDIS_URL = "redis://localhost:6379";
 process.env.JWT_SECRET = "queue-test-secret";
 
-const { agentJobs, agentTriggers, failedAgentJobs, startWorkers, webhookProcessing, wireDlq } = await import("./queues.js");
+const { agentJobs, agentTriggerProcessor, agentTriggers, failedAgentJobs, scheduleMailPollSweep, startWorkers, webhookProcessing, wireDlq } = await import("./queues.js");
 
 const connection = { url: process.env.REDIS_URL, maxRetriesPerRequest: null };
 const workers = startWorkers();
@@ -31,7 +31,7 @@ afterAll(async () => {
   ]);
 });
 
-describe("queues function in isolation (Plan 3.1)", () => {
+describe("queues function in isolation", () => {
   test("agent-jobs worker processes an enqueued job", async () => {
     const job = await agentJobs.add("execute", { agentId: "a-1", trigger: "user_message" });
     await poll(() => job.getState(), (s) => s === "completed");
@@ -55,6 +55,29 @@ describe("queues function in isolation (Plan 3.1)", () => {
     await poll(() => failedAgentJobs.getJobCounts("waiting"), (c) => (c.waiting ?? 0) >= 1);
 
     expect((await failedAgentJobs.getJobCounts("waiting")).waiting).toBeGreaterThanOrEqual(1);
+    await w.close();
+    await q.close();
+  });
+});
+
+describe("mail-poll sweep (lazy)", () => {
+  test("scheduleMailPollSweep registers the repeatable scheduler idempotently", async () => {
+    await scheduleMailPollSweep();
+    await scheduleMailPollSweep();
+    const schedulers = await agentTriggers.getJobSchedulers();
+    const pollScheduler = schedulers.find((s) => s.key === "mail-poll-sweep");
+    expect(pollScheduler).toBeDefined();
+    expect(pollScheduler?.pattern).toBe("*/5 * * * *");
+  });
+
+  test("agent-triggers worker dispatches a mail-poll-sweep job (runs pollImportantMail, completes)", async () => {
+    // Use a throwaway queue + worker wired to the real processor: a live dev
+    // worker owns the shared agent-triggers queue and would steal this job.
+    const q = new Queue(`mail-poll-dispatch-${Date.now()}`, { connection });
+    const w = new Worker(q.name, agentTriggerProcessor, { connection });
+    const job = await q.add("mail-poll-sweep", { poll: true });
+    await poll(() => job.getState(), (s) => s === "completed");
+    expect(await job.getState()).toBe("completed");
     await w.close();
     await q.close();
   });

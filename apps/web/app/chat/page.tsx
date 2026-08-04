@@ -69,6 +69,9 @@ export default function ChatPage() {
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  // Message we've already revealed. A refetch must not re-stream the same last
+  // message (that's what made replies "reparse" on every socket refetch).
+  const lastStreamedRef = useRef<string | null>(null);
   const router = useRouter();
 
   const isEmpty = messages.length === 0;
@@ -99,7 +102,9 @@ export default function ChatPage() {
     const thread = data.conversation.messages.map(toThreadMessage);
     setMessages(thread);
     const last = thread[thread.length - 1];
-    if (last?.speaker === "mimir") setStreamingId(last.id);
+    if (last?.speaker === "mimir" && last.id !== lastStreamedRef.current) {
+      setStreamingId(last.id);
+    }
     setView("chat");
     return true;
   }, [router]);
@@ -276,7 +281,10 @@ export default function ChatPage() {
             <ThreadBubbles
               messages={messages}
               streamingId={streamingId}
-              onStreamDone={() => setStreamingId(null)}
+              onStreamDone={() => {
+                if (streamingId) lastStreamedRef.current = streamingId;
+                setStreamingId(null);
+              }}
               onAction={(id, action) => post(action)}
             />
 

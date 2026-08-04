@@ -93,54 +93,6 @@ export function Item({
   );
 }
 
-/**
- * Word-by-word reveal for Mimir's replies. Same easing/duration as .reveal.
- * Calls onDone once every word has landed.
- */
-export function TextGenerate({
-  text,
-  className,
-  wordDelay = 55,
-  onDone,
-  active = true,
-}: {
-  text: string;
-  className?: string | undefined;
-  wordDelay?: number | undefined;
-  onDone?: (() => void) | undefined;
-  active?: boolean | undefined;
-}) {
-  const words = text.split(" ");
-  const doneRef = useRef(onDone);
-  doneRef.current = onDone;
-
-  useEffect(() => {
-    if (!active) return;
-    const total = words.length * wordDelay + 560;
-    const t = setTimeout(() => doneRef.current?.(), total);
-    return () => clearTimeout(t);
-  }, [active, text, wordDelay, words.length]);
-
-  if (!active) return <span className={className}>{text}</span>;
-
-  return (
-    <span className={className}>
-      {words.map((word, i) => (
-        <span
-          key={`${word}-${i}`}
-          className="inline-block whitespace-pre"
-          style={{
-            animation: `reveal-in 500ms ${EASE} ${i * wordDelay}ms both`,
-          }}
-        >
-          {word}
-          {i < words.length - 1 ? " " : ""}
-        </span>
-      ))}
-    </span>
-  );
-}
-
 /** The pulsing signal dot — the one loading/liveness indicator in the product. */
 export function SignalDot({ className }: { className?: string | undefined }) {
   return (

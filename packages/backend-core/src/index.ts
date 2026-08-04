@@ -4,8 +4,8 @@ import "./observability.js"; // side effect: starts OTel SDK + Sentry before ins
 
 export type { User, Message, Conversation } from "@mimir/shared-types";
 export * from "./constants.js";
-export { getConfig } from "./config.js";
-export type { Config } from "./config.schema.js";
+export { getConfig } from "./config/config.js";
+export type { Config } from "./config/config.schema.js";
 export { getPrismaClient } from "./prisma.js";
 export { tracer } from "./observability.js";
 export { logger, getLogger, runWithContext } from "./logger.js";
