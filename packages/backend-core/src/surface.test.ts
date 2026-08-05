@@ -23,7 +23,7 @@ describe("frameResultForUser", () => {
     expect(out).toContain("could you tell me");
     // The interaction-agent persona is the system prompt (human, no tools).
     expect(seenSystem).toContain("You are Mimir");
-    expect(seenSystem).toContain("You have NO agent");
+    expect(seenSystem).toContain("NEVER output tool calls");
     // The raw leaky result was passed as user context, not output directly.
     expect(seenUser).toContain(LEAKY);
   });

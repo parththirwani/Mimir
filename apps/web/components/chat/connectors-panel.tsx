@@ -69,9 +69,9 @@ export function ConnectorsPanel({ open, onClose, onConnect, items, onLogout }: P
                       type="button"
                       onClick={() => onConnect(item.name)}
                       className={cn(
-                        "flex items-center gap-2 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground",
-                        "transition-colors hover:border-border-strong hover:text-foreground",
-                        "focus-visible:outline-none focus-visible:border-signal",
+                        "flex items-center gap-2 rounded-md border border-border bg-secondary px-3 py-1.5 text-xs font-medium text-foreground",
+                        "transition-colors hover:border-border-strong hover:bg-accent",
+                        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-signal",
                       )}
                     >
                       <span

@@ -37,16 +37,30 @@ describe("parseEmailAction (structured draft proposal)", () => {
   });
 });
 
-describe("parseResolveIntent (pending draft confirm/cancel decision)", () => {
+describe("parseResolveIntent (pending draft decision + edit)", () => {
+  const DRAFT = { to: "old@example.com", subject: "Trip", body: "Be ready." };
+
   test("confirm/cancel/unrelated pass through", () => {
-    expect(parseResolveIntent('{"intent":"confirm"}')).toBe("confirm");
-    expect(parseResolveIntent('{"intent":"cancel"}')).toBe("cancel");
-    expect(parseResolveIntent('{"intent":"unrelated"}')).toBe("unrelated");
+    expect(parseResolveIntent('{"intent":"confirm"}', DRAFT)).toEqual({ intent: "confirm" });
+    expect(parseResolveIntent('{"intent":"cancel"}', DRAFT)).toEqual({ intent: "cancel" });
+    expect(parseResolveIntent('{"intent":"unrelated"}', DRAFT)).toEqual({ intent: "unrelated" });
+  });
+
+  test("edit carries the updated draft, inheriting unchanged fields", () => {
+    const r = parseResolveIntent('{"intent":"edit","to":"parththirwani@gmail.com"}', DRAFT);
+    expect(r.intent).toBe("edit");
+    expect(r.draft).toEqual({ to: "parththirwani@gmail.com", subject: "Trip", body: "Be ready." });
+  });
+
+  test("an invalid/edit recipient falls back to the draft's current recipient", () => {
+    const r = parseResolveIntent('{"intent":"edit","to":"not-an-email"}', DRAFT);
+    expect(r.intent).toBe("edit");
+    expect(r.draft?.to).toBe("old@example.com");
   });
 
   test("unknown intent or garbage -> ambiguous (never a silent send)", () => {
-    expect(parseResolveIntent('{"intent":"banana"}')).toBe("ambiguous");
-    expect(parseResolveIntent("just send it please")).toBe("ambiguous");
+    expect(parseResolveIntent('{"intent":"banana"}', DRAFT)).toEqual({ intent: "ambiguous" });
+    expect(parseResolveIntent("just send it please", DRAFT)).toEqual({ intent: "ambiguous" });
   });
 });
 

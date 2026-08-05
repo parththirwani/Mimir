@@ -24,7 +24,6 @@ export const AGENT_DORMANCY_DAYS = 7; // no AgentEvent for this long => dormant
 
 // Mail poll — fixed-cadence inbox sweep
 export const MAIL_POLL_CRON = "*/5 * * * *"; // cron used for the mail-poll sweep
-export const SURFACED_MAIL_TTL_SECONDS = 30 * 24 * 60 * 60; // how long a surfaced mail id stays deduped
 // A mail judged "noise" is held briefly, then re-judged. The filter is cheap
 // (gpt-4o-mini) and imperfect; a permanent claim would silently drop a real
 // meeting invite on one bad call. 24h bounds the re-judge cost per mail.

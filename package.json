@@ -8,11 +8,17 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
-    "verify": "bun run scripts/verify-no-duplication.ts"
+    "verify": "bun run scripts/verify-no-duplication.ts",
+    "classify": "bun scripts/intent-iteration/run-classify.ts",
+    "iterate": "bun scripts/intent-iteration/run-e2e.ts",
+    "intent": "bun scripts/intent-iteration/run-intent.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.15.3",
+    "express": "^5.2.1",
+    "ioredis": "^6.0.0",
     "prettier": "^3.7.4",
     "turbo": "^2.10.8",
     "typescript": "5.9.2"

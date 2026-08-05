@@ -91,7 +91,11 @@ export async function frameResultForUser(opts: FrameResultOptions): Promise<stri
   const caller = opts.caller ?? (async (msgs, options) => callOpenRouter(msgs, options));
   try {
     const res = await caller(messages, { useCase: "surface" });
-    await trackModelCall({ userId: opts.userId ?? "", useCase: "surface", result: res as Parameters<typeof trackModelCall>[0]["result"] });
+    // Only attribute telemetry when there's a real user; an empty/anonymous
+    // framing (e.g. tests, no userId) must not write a row that violates the FK.
+    if (opts.userId) {
+      await trackModelCall({ userId: opts.userId, useCase: "surface", result: res as Parameters<typeof trackModelCall>[0]["result"] });
+    }
     const framed = res.content.trim();
     return framed || opts.result;
   } catch (e) {

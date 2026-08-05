@@ -77,9 +77,12 @@ describe("mail-poll sweep (lazy)", () => {
     const q = new Queue(`mail-poll-dispatch-${Date.now()}`, { connection });
     const w = new Worker(q.name, agentTriggerProcessor, { connection });
     const job = await q.add("mail-poll-sweep", { poll: true });
-    await poll(() => job.getState(), (s) => s === "completed");
+    // This processor runs a real pollImportantMail sweep (live Nango/Gmail
+    // attempts over the shared test DB's connected rows), so it needs a longer
+    // poll + test timeout than the 5s default — same as the other integration tests.
+    await poll(() => job.getState(), (s) => s === "completed", 30_000);
     expect(await job.getState()).toBe("completed");
     await w.close();
     await q.close();
-  });
+  }, 30_000);
 });

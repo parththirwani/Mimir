@@ -71,7 +71,7 @@ export function ThreadBubbles({ messages, streamingId, onStreamDone, onAction, o
                   <button
                     type="button"
                     onClick={onConnect}
-                    className="flex items-center gap-2 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground focus-visible:outline-none focus-visible:border-signal"
+                    className="flex items-center gap-2 rounded-md border border-border bg-secondary px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:border-border-strong hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-signal"
                   >
                     <span className="size-1.5 rounded-full bg-signal" aria-hidden />
                     Connect Gmail
@@ -83,17 +83,15 @@ export function ThreadBubbles({ messages, streamingId, onStreamDone, onAction, o
                   <button
                     type="button"
                     onClick={() => onAction(message.id, "send")}
-                    className="flex items-center gap-2 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground focus-visible:outline-none focus-visible:border-signal"
+                    className="flex items-center gap-2 rounded-md bg-signal px-3 py-1.5 text-xs font-semibold text-signal-foreground transition-colors hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal/40"
                   >
-                    <span className="size-1.5 rounded-full bg-signal" aria-hidden />
                     Send
                   </button>
                   <button
                     type="button"
                     onClick={() => onAction(message.id, "cancel")}
-                    className="flex items-center gap-2 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground focus-visible:outline-none focus-visible:border-signal"
+                    className="flex items-center gap-2 rounded-md border border-border bg-secondary px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:border-border-strong hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-signal"
                   >
-                    <span className="size-1.5 rounded-full border border-muted-foreground" aria-hidden />
                     Cancel
                   </button>
                 </div>

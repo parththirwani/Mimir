@@ -98,6 +98,19 @@ export async function sendGmailDraft(token: string, draftId: string): Promise<st
   return sent.id;
 }
 
+// An edit supersedes the previously proposed draft: delete it from Gmail so
+// repeated corrections don't pile up orphaned copies. Gmail returns 204 with an
+// empty body on delete, so this bypasses gmailFetch's res.json().
+export async function deleteGmailDraft(token: string, draftId: string): Promise<void> {
+  const res = await fetch(`${GMAIL_API}/gmail/v1/users/me/drafts/${encodeURIComponent(draftId)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401 || res.status === 403) throw new ConnectionError("expired", "gmail access token rejected");
+  if (res.status === 429) throw new ProviderError("rate_limited", "gmail rate limited");
+  if (!res.ok) throw new ProviderError("provider_down", `gmail api ${res.status}`);
+}
+
 // RFC 2822 raw message for Gmail. Subject uses RFC 2047 B-encoding when it
 // carries non-ASCII; the body is base64 under a UTF-8 text/plain part so any
 // charset survives the API round-trip.

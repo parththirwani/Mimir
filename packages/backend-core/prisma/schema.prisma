@@ -43,6 +43,7 @@ model User {
   pushSubscriptions PushSubscription[]
   analyticsEvents   AnalyticsEvent[]
   modelCallLogs     ModelCallLog[]
+  surfacedMails     SurfacedMail[]
 }
 
 model Conversation {
@@ -158,6 +159,20 @@ model OutboxEvent {
   createdAt   DateTime  @default(now())
 
   @@index([processedAt])
+}
+
+// Durable, Postgres-claimed dedup for surfaced mail (the source of truth in
+// addition to the Redis set). A unique primary key on messageId means a re-poll
+// can NEVER re-surface the same email, even if Redis was flushed or a scale-out
+// worker re-ran the sweep. The crew's in-flight atomic claim is still the Redis
+// set; this row records the durable claim once surfaced.
+model SurfacedMail {
+  messageId String   @id
+  userId    String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 // User-supplied MCP servers (5.8): separate settings section, streamable-HTTP

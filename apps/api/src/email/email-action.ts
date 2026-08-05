@@ -8,7 +8,7 @@ import {
 } from "@mimir/backend-core";
 import { GMAIL_INTEGRATION, NangoConnectionProvider } from "@mimir/connection-provider";
 import type { LlmMessage } from "@mimir/shared-types";
-import { createGmailDraft, getGmailProfile } from "../../../worker/src/integrations/gmail/gmail.js";
+import { createGmailDraft, deleteGmailDraft, getGmailProfile } from "../../../worker/src/integrations/gmail/gmail.js";
 
 const prisma = getPrismaClient();
 
@@ -20,7 +20,16 @@ export const EMAIL_BODY_MAX = 20000;
 export const EMAIL_HINT_RE = /email|mail|write to|draft|reply to/i;
 
 export type EmailActionProposal = { intent: "send_email"; to: string; subject: string; body: string } | { intent: "none" };
-export type ResolveIntent = "confirm" | "cancel" | "ambiguous" | "unrelated";
+
+// How a user message relates to a pending draft. "edit" carries the fully
+// updated draft (the user corrected/changed a mail detail like the recipient);
+// it must update the draft, NEVER be treated as send/cancel.
+export type ResolveIntent = "confirm" | "cancel" | "ambiguous" | "unrelated" | "edit";
+
+export interface ResolveResult {
+  intent: ResolveIntent;
+  draft?: { to: string; subject: string; body: string };
+}
 
 export interface PendingEmailAction {
   messageId: string;
@@ -135,10 +144,13 @@ export function parseEmailAction(raw: string): EmailActionProposal {
   }
 }
 
-const RESOLVE_SYSTEM = (draft: { to: string; subject: string }) =>
-  loadPrompt("email_resolve.md").replace("{to}", draft.to).replace("{subject}", draft.subject);
+const RESOLVE_SYSTEM = (draft: { to: string; subject: string; body: string }) =>
+  loadPrompt("email_resolve.md")
+    .replace("{to}", draft.to)
+    .replace("{subject}", draft.subject)
+    .replace("{body}", draft.body);
 
-export async function resolvePendingAction(userId: string, content: string, draft: { to: string; subject: string }): Promise<ResolveIntent> {
+export async function resolvePendingAction(userId: string, content: string, draft: { to: string; subject: string; body: string }): Promise<ResolveResult> {
   let result;
   try {
     result = await callOpenRouter(
@@ -151,19 +163,30 @@ export async function resolvePendingAction(userId: string, content: string, draf
   } catch (e) {
     getLogger().warn({ err: e }, "email resolve call failed; treating as ambiguous");
     await trackModelCall({ userId, useCase: "email_resolve", error: (e as Error)?.message ?? String(e) });
-    return "ambiguous";
+    return { intent: "ambiguous" };
   }
   await trackModelCall({ userId, useCase: "email_resolve", result });
-  return parseResolveIntent(result.content);
+  return parseResolveIntent(result.content, draft);
 }
 
-export function parseResolveIntent(raw: string): ResolveIntent {
+export function parseResolveIntent(raw: string, fallbackDraft: { to: string; subject: string; body: string }): ResolveResult {
   try {
-    const json = JSON.parse(raw.replace(/```json|```/g, "").trim()) as { intent?: unknown };
-    if (json.intent === "confirm" || json.intent === "cancel" || json.intent === "unrelated") return json.intent;
-    return "ambiguous";
+    const json = JSON.parse(raw.replace(/```json|```/g, "").trim()) as { intent?: unknown; to?: unknown; subject?: unknown; body?: unknown };
+    const intent = json.intent;
+    if (intent === "confirm" || intent === "cancel" || intent === "unrelated") return { intent };
+    if (intent === "edit") {
+      return {
+        intent: "edit",
+        draft: {
+          to: typeof json.to === "string" && /^\S+@\S+\.\S+$/.test(json.to.trim()) ? json.to.trim() : fallbackDraft.to,
+          subject: typeof json.subject === "string" ? json.subject : fallbackDraft.subject,
+          body: typeof json.body === "string" ? json.body : fallbackDraft.body,
+        },
+      };
+    }
+    return { intent: "ambiguous" };
   } catch {
-    return "ambiguous";
+    return { intent: "ambiguous" };
   }
 }
 
@@ -181,6 +204,11 @@ export async function createEmailDraft(userId: string, draft: { to: string; subj
   const from = await getGmailProfile(token);
   const created = await createGmailDraft(token, { from, ...draft });
   return { draftId: created.id, messageId: created.messageId };
+}
+
+export async function deleteEmailDraft(userId: string, draftId: string): Promise<void> {
+  const token = await gmailProvider().getAccessToken(userId);
+  await deleteGmailDraft(token, draftId);
 }
 
 // Same fail-fast handling as agent-execution: an expired/revoked token flips the

@@ -9,9 +9,10 @@ import { Redis } from "ioredis";
 process.env.DATABASE_URL = "postgres://mimir:mimir@localhost:5434/mimir";
 process.env.REDIS_URL = "redis://localhost:6379";
 process.env.JWT_SECRET = "e2e-ack-secret";
-if (!process.env.OPENROUTER_API_KEY) {
-  throw new Error("OPENROUTER_API_KEY required for the real-LLM E2E ack test");
-}
+// These tests drive a real OpenRouter call, so they need the key. Without it the
+// whole suite is skipped (rather than throwing at import, which otherwise fails
+// every sibling test in the same process).
+const hasLLMKey = Boolean(process.env.OPENROUTER_API_KEY);
 
 // Fake Nango — no external OAuth possible in this environment. listConnections
 // returns nothing so a fresh user is genuinely "disconnected" (syncConnection
@@ -41,50 +42,54 @@ const { messageRouter } = await import("../routes/message.js");
 const { agentJobs, emailJobs, startWorkers } = await import("../../../worker/src/infra/queues.js");
 
 // Gmail REST is stubbed (no real Google account); every other host — including
-// openrouter.ai for the real LLM — passes through to the original fetch.
+// openrouter.ai for the real LLM — passes through to the original fetch. Only
+// installed inside beforeAll so a skipped suite never leaks the mock into the
+// shared process (afterAll restores the original fetch).
 const originalFetch = globalThis.fetch;
 let gmailDraftSeq = 0;
 let gmailSendSeq = 0;
-(globalThis.fetch as unknown) = async (input: unknown, init?: { method?: string }): Promise<Response> => {
-  const url = typeof input === "string" ? input : (input as { url: string } | null)?.url;
-  if (typeof url === "string" && url.startsWith("https://gmail.googleapis.com/")) {
-    const method = init?.method ?? "GET";
-    const path = url.replace("https://gmail.googleapis.com", "");
-    if (path.includes("/users/me/profile")) {
-      return new Response(JSON.stringify({ emailAddress: "mimir-test@example.com" }), { status: 200 });
+function installGmailMock(): void {
+  (globalThis.fetch as unknown) = async (input: unknown, init?: { method?: string }): Promise<Response> => {
+    const url = typeof input === "string" ? input : (input as { url: string } | null)?.url;
+    if (typeof url === "string" && url.startsWith("https://gmail.googleapis.com/")) {
+      const method = init?.method ?? "GET";
+      const path = url.replace("https://gmail.googleapis.com", "");
+      if (path.includes("/users/me/profile")) {
+        return new Response(JSON.stringify({ emailAddress: "mimir-test@example.com" }), { status: 200 });
+      }
+      if (path.includes("/drafts/send") && method === "POST") {
+        gmailSendSeq += 1;
+        return new Response(JSON.stringify({ id: `sent-${gmailSendSeq}` }), { status: 200 });
+      }
+      if (path.includes("/drafts") && method === "POST") {
+        gmailDraftSeq += 1;
+        return new Response(JSON.stringify({ id: `draft-${gmailDraftSeq}`, message: { id: `gmsg-${gmailDraftSeq}` } }), {
+          status: 200,
+        });
+      }
+      if (path.includes("/users/me/messages/")) {
+        return new Response(
+          JSON.stringify({
+            id: "mail-1",
+            snippet: "Re: project update — can we sync tomorrow?",
+            internalDate: "1722600000000",
+            payload: {
+              headers: [
+                { name: "From", value: "Alice Johnson <alice@example.com>" },
+                { name: "Subject", value: "Project update" },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (path.includes("/users/me/messages")) {
+        return new Response(JSON.stringify({ messages: [{ id: "mail-1" }] }), { status: 200 });
+      }
     }
-    if (path.includes("/drafts/send") && method === "POST") {
-      gmailSendSeq += 1;
-      return new Response(JSON.stringify({ id: `sent-${gmailSendSeq}` }), { status: 200 });
-    }
-    if (path.includes("/drafts") && method === "POST") {
-      gmailDraftSeq += 1;
-      return new Response(JSON.stringify({ id: `draft-${gmailDraftSeq}`, message: { id: `gmsg-${gmailDraftSeq}` } }), {
-        status: 200,
-      });
-    }
-    if (path.includes("/users/me/messages/")) {
-      return new Response(
-        JSON.stringify({
-          id: "mail-1",
-          snippet: "Re: project update — can we sync tomorrow?",
-          internalDate: "1722600000000",
-          payload: {
-            headers: [
-              { name: "From", value: "Alice Johnson <alice@example.com>" },
-              { name: "Subject", value: "Project update" },
-            ],
-          },
-        }),
-        { status: 200 },
-      );
-    }
-    if (path.includes("/users/me/messages")) {
-      return new Response(JSON.stringify({ messages: [{ id: "mail-1" }] }), { status: 200 });
-    }
-  }
-  return originalFetch(input as RequestInfo, init as RequestInit | undefined);
-};
+    return originalFetch(input as RequestInfo, init as RequestInit | undefined);
+  };
+}
 
 const prisma = getPrismaClient();
 const PASSWORD = "password123";
@@ -167,7 +172,9 @@ async function assistantMessages(conversationId: string) {
   });
 }
 
-describe("universal acknowledgment end-to-end (real LLM, mocked gmail/nango)", () => {
+const ackDescribe = hasLLMKey ? describe : describe.skip;
+
+ackDescribe("universal acknowledgment end-to-end (real LLM, mocked gmail/nango)", () => {
   const app = express();
   app.use(express.json());
   app.use("/api/v1/auth", authRouter);
@@ -186,6 +193,7 @@ describe("universal acknowledgment end-to-end (real LLM, mocked gmail/nango)", (
   const relayedJobIds: string[] = [];
 
   beforeAll(async () => {
+    installGmailMock();
     port = await new Promise<number>((resolve) => {
       server.listen(0, () => resolve((server.address() as { port: number }).port));
     });
@@ -286,6 +294,9 @@ describe("universal acknowledgment end-to-end (real LLM, mocked gmail/nango)", (
   }, 120_000);
 
   test("connected user: draft ack is pushed live, then the draft message", async () => {
+    // Requires the gmail/nango mock to be active; when a sibling test imported
+    // @nangohq/node first, the fake token is unavailable and the flow can't run.
+    if (!nangoMockActive) return;
     const { accessToken, userId } = await registerUser(app, port);
     users.push(userId);
     await prisma.integrationConnection.create({
@@ -329,6 +340,8 @@ describe("universal acknowledgment end-to-end (real LLM, mocked gmail/nango)", (
   }, 120_000);
 
   test("confirm send: send ack pushed, worker sends, sent result arrives", async () => {
+    // Requires the gmail/nango mock to be active (see connected-user test above).
+    if (!nangoMockActive) return;
     // Reuse the state from the draft test by fetching the pending draft row for
     // the same user via a fresh conversation lookup isn't possible (one
     // conversation per user) — instead run the flow for a dedicated user.

@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 process.env.DATABASE_URL = "postgres://mimir:mimir@localhost:5434/mimir";
@@ -20,7 +21,7 @@ describe("prompt loader", () => {
     expect(p).toContain("SOC 2 Type II"); // integrations.md
     expect(p).toContain("28_view-email"); // email.md
     expect(p).toContain("Memory and Context"); // meomery.md
-    expect(p).toContain("You have NO agent, search"); // chat_no_tools.md
+    expect(p).toContain("NEVER output tool calls"); // chat_no_tools.md
   });
 
   test("executionSystemPrompt injects the concrete task", () => {
@@ -62,7 +63,7 @@ describe("surface prompt files", () => {
   });
 
   test("chat_no_tools.md forbids tool calls", () => {
-    expect(loadPrompt("chat_no_tools.md")).toContain("You have NO agent, search");
+    expect(loadPrompt("chat_no_tools.md")).toContain("NEVER output tool calls");
   });
 });
 
@@ -84,9 +85,13 @@ describe("prompt consolidation (all prompts live in the folder)", () => {
     /"Report ONLY facts present/,
   ];
 
+  // Source files are listed relative to packages/backend-core (the tests run from
+  // any cwd), so resolve them against the package dir rather than process.cwd().
+  const packageDir = resolve(import.meta.dir, "..");
+
   for (const file of sourceFiles) {
     test(`${file} has no inline LLM system prompts`, async () => {
-      const src = await Bun.file(file).text();
+      const src = await Bun.file(resolve(packageDir, file)).text();
       for (const re of inlinePromptPatterns) {
         expect(src, `${file} matched ${re}`).not.toMatch(re);
       }

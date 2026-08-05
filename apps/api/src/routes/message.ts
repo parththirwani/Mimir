@@ -20,6 +20,7 @@ import {
   EMAIL_TO_RE,
   cancelPendingEmailActions,
   createEmailDraft,
+  deleteEmailDraft,
   emailActionHint,
   findPendingEmailAction,
   isGmailConnected,
@@ -32,9 +33,12 @@ import { writeAck } from "../agent/ack.js";
 import {
   classifyMessage,
   classifyTrigger,
+  archiveAgents,
+  listActiveAgents,
+  listActiveWithTriggers,
   embedTask,
   findDuplicateAgent,
-  listActiveAgents,
+  rewriteQuery,
   spawnAgent,
 } from "../agent/agent.js";
 import {
@@ -148,9 +152,9 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
   // interaction-agent classification decides confirm/cancel/ambiguous/unrelated.
   const pendingAction = await findPendingEmailAction(conversationId);
   if (pendingAction) {
-    const intent = await resolvePendingAction(userId, content, pendingAction.draft);
+    const resolved = await resolvePendingAction(userId, content, pendingAction.draft);
     let replyContent: string;
-    if (intent === "confirm") {
+    if (resolved.intent === "confirm") {
       // Async send: the acknowledgment returns immediately, the actual Gmail
       // send runs as an outbox->worker job that writes the "Sent" result and
       // pushes it via socket. The draft stays pending until the worker marks it
@@ -184,7 +188,7 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       });
       res.status(200).json(ack);
       return;
-    } else if (intent === "cancel") {
+    } else if (resolved.intent === "cancel") {
       await markEmailAction(pendingAction.messageId, "cancelled");
       await trackEvent(userId, "email_cancelled", {
         conversationId,
@@ -193,7 +197,88 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
         subject: pendingAction.draft.subject,
       });
       replyContent = "Cancelled — the email stays in your Gmail drafts if you want to edit it there.";
-    } else if (intent === "ambiguous") {
+    } else if (resolved.intent === "edit" && resolved.draft) {
+      // The user is changing a mail detail (recipient/subject/body), not
+      // deciding to send. Validate, re-draft, and re-show the updated email for
+      // confirmation instead of forcing send/cancel.
+      const d = resolved.draft;
+      let check: { ok: boolean; replyContent: string } = { ok: true, replyContent: "" };
+      if (!EMAIL_TO_RE.test(d.to) || !d.subject || !d.body) {
+        check = { ok: false, replyContent: "I still need a valid recipient and the full message — could you give me those?" };
+      } else if (d.subject.length > EMAIL_SUBJECT_MAX || d.body.length > EMAIL_BODY_MAX) {
+        check = { ok: false, replyContent: "That draft is too long. Could you shorten it?" };
+      }
+      if (!check.ok) {
+        const msg = await prisma.message.create({
+          data: { conversationId, role: "assistant", content: check.replyContent, status: "complete", parentMessageId: userMsg.id },
+        });
+        res.status(200).json({
+          message: { id: msg.id, conversationId, role: "assistant", content: msg.content, createdAt: msg.createdAt },
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          latencyMs: 0,
+        });
+        return;
+      }
+      await cancelPendingEmailActions(conversationId);
+      await trackEvent(userId, "email_draft_edited", {
+        conversationId,
+        oldTo: pendingAction.draft.to,
+        to: d.to,
+        subject: d.subject,
+      });
+      let draft;
+      try {
+        draft = await createEmailDraft(userId, { to: d.to, subject: d.subject, body: d.body });
+      } catch (e) {
+        // Only the pending chat action was un-pended; the old Gmail draft is
+        // still there, so a failed re-draft doesn't destroy the user's copy.
+        getLogger().error({ err: e }, "gmail draft update failed");
+        const msg = await prisma.message.create({
+          data: {
+            conversationId,
+            role: "assistant",
+            content: "I couldn't update that draft in Gmail right now. Try again in a moment.",
+            status: "complete",
+            parentMessageId: userMsg.id,
+          },
+        });
+        res.status(200).json({
+          message: { id: msg.id, conversationId, role: "assistant", content: msg.content, createdAt: msg.createdAt },
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          latencyMs: 0,
+        });
+        return;
+      }
+      // The new draft exists — now remove the superseded one from Gmail
+      // (best-effort) so repeated edits don't pile up orphaned copies. A
+      // user-initiated cancel intentionally keeps its draft; only the draft
+      // being edited away is removed here, and only once the replacement landed.
+      await deleteEmailDraft(userId, pendingAction.draftId).catch((e) =>
+        getLogger().warn({ err: e, conversationId, draftId: pendingAction.draftId }, "failed to delete superseded gmail draft on edit"),
+      );
+      const draftText = `To: ${d.to}\nSubject: ${d.subject}\n\n${d.body}`;
+      const msg = await prisma.message.create({
+        data: {
+          conversationId,
+          role: "assistant",
+          content: `Here's the updated draft I'll send:\n\n${draftText}\n\nReply **send** to send it, or **cancel** to keep it as a draft.`,
+          status: "complete",
+          parentMessageId: userMsg.id,
+          toolCalls: {
+            type: EMAIL_ACTION_TYPE,
+            status: "pending",
+            draftId: draft.draftId,
+            draft: { to: d.to, subject: d.subject, body: d.body },
+          },
+        },
+      });
+      res.status(200).json({
+        message: { id: msg.id, conversationId, role: "assistant", content: msg.content, createdAt: msg.createdAt },
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        latencyMs: 0,
+      });
+      return;
+    } else if (resolved.intent === "ambiguous") {
       replyContent = "Should I send the draft or cancel it? Reply **send** to send it, or **cancel** to keep it as a draft.";
     } else {
       replyContent = `There's a pending email draft to ${pendingAction.draft.to} ("${pendingAction.draft.subject}"). Resolve it first — reply **send** to send it, or **cancel** to keep it as a draft.`;
@@ -437,7 +522,86 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
 
   // Interaction Agent classifies the intent. spawn_agent delegates to an
   // execution agent (dedup -> outbox); answer_directly falls through to the chat flow.
-  const classification = await classifyMessage(userId, content, await listActiveAgents(userId));
+  // A cheap context-resolution stage (rewrite) folds recent turns into a
+  // self-contained query FIRST so anaphora ("look it up", "that thing") and
+  // corrections route correctly.
+  const rewritten = await rewriteQuery(userId, messages, content);
+  await trackEvent(userId, "query_rewritten", { conversationId, rewritten, reworded: rewritten !== content });
+  const classification = await classifyMessage(userId, rewritten, await listActiveAgents(userId));
+
+  // --- Management: cancel/forget/delete ---
+  // A stop/cancel/forget/negation request archives the matching active Agent(s)
+  // and disables their Triggers — it must NEVER become a retarget/resume. The
+  // classifier guarantees no targetAgentId for manage_cancel.
+  if (classification.action === "manage_cancel") {
+    await trackEvent(userId, "agent_manage_cancel_classified", { conversationId, targetHint: classification.targetHint ?? null });
+    const { archived } = await archiveAgents(userId, classification.targetHint);
+    const replyContent =
+      archived.length > 0
+        ? "Done — I've stopped that."
+        : "There's nothing matching that to stop right now.";
+    const reply = await prisma.message.create({
+      data: { conversationId, role: "assistant", content: replyContent, status: "complete", parentMessageId: userMsg.id },
+    });
+    res.status(200).json({
+      message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      latencyMs: 0,
+    });
+    return;
+  }
+
+  // --- Management: list active watches/triggers ---
+  if (classification.action === "manage_list") {
+    await trackEvent(userId, "agent_manage_list_classified", { conversationId });
+    const agents = await listActiveWithTriggers(userId);
+    if (agents.length === 0) {
+      const reply = await prisma.message.create({
+        data: { conversationId, role: "assistant", content: "Nothing active right now.", status: "complete", parentMessageId: userMsg.id },
+      });
+      res.status(200).json({
+        message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        latencyMs: 0,
+      });
+      return;
+    }
+    const lines = agents.map((a, i) => {
+      const trigs = a.triggers.map((t) => t.criteria).filter(Boolean);
+      return `${i + 1}. ${a.taskDescription}${trigs.length ? ` — when: ${trigs.join("; ")}` : ""}`;
+    });
+    const replyContent = lines.join("\n");
+    const reply = await prisma.message.create({
+      data: { conversationId, role: "assistant", content: replyContent, status: "complete", parentMessageId: userMsg.id },
+    });
+    res.status(200).json({
+      message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      latencyMs: 0,
+    });
+    return;
+  }
+
+  // --- Ambiguity guard: never create state from a vague request ---
+  if (classification.action === "ask_clarification") {
+    await trackEvent(userId, "agent_ask_clarification", { conversationId });
+    const reply = await prisma.message.create({
+      data: {
+        conversationId,
+        role: "assistant",
+        content: "Could you be a bit more specific about what you'd like me to do? I didn't want to set anything up until you confirm.",
+        status: "complete",
+        parentMessageId: userMsg.id,
+      },
+    });
+    res.status(200).json({
+      message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      latencyMs: 0,
+    });
+    return;
+  }
+
   if (classification.action === "spawn_agent" && classification.taskDescription) {
     await trackEvent(userId, "agent_spawn_classified", {
       conversationId,

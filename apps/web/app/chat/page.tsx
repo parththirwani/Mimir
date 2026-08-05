@@ -231,8 +231,19 @@ export default function ChatPage() {
     const { default: Nango } = await import("@nangohq/frontend");
     new Nango({ connectSessionToken: sessionToken }).openConnectUI({
       onEvent: (event) => {
-        if (event.type === "connect") refreshGmailStatus();
-        if (event.type === "error") setError(event.payload.errorMessage);
+        if (event.type === "connect") {
+          refreshGmailStatus();
+          return;
+        }
+        if (event.type === "error") {
+          // A user cancel (closed the window, denied consent at the provider) is
+          // surfaced by Nango as an error with a raw provider payload. It's not a
+          // failure — ignore it instead of flashing `{"error":"access_denied"}`.
+          const cancelled =
+            event.payload.errorType === "window_closed" ||
+            /access_denied/i.test(event.payload.errorMessage);
+          if (!cancelled) setError("Gmail connect didn't complete — try again");
+        }
       },
     });
   }, [refreshGmailStatus]);

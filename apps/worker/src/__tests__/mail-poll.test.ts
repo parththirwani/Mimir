@@ -15,6 +15,16 @@ const prisma = getPrismaClient();
 const userId = `mail-poll-${randomUUID()}`;
 const email = `${userId}@test.local`;
 
+// SurfacedMail is keyed on a GLOBAL messageId PK — real Gmail ids are globally
+// unique, but tests must be too or a row left by an earlier run permanently
+// dedups a reused id. Generate per-run ids so consecutive runs can't collide.
+const mid = () => `mail-${randomUUID()}`;
+const M1 = mid();
+const M2 = mid();
+const M3 = mid();
+const M4 = mid();
+const M5 = mid();
+
 const msg = (id: string, subject: string) => ({
   id,
   from: "Alice <alice@example.com>",
@@ -70,12 +80,13 @@ afterAll(async () => {
   await prisma.message.deleteMany({ where: { conversation: { userId } } });
   await prisma.integrationConnection.deleteMany({ where: { userId } });
   await prisma.conversation.deleteMany({ where: { userId } });
+  await prisma.surfacedMail.deleteMany({ where: { userId } });
   await prisma.user.delete({ where: { id: userId } });
 });
 
 describe("pollImportantMail (lazy sweep)", () => {
   test("surfaces a new important mail into the user's conversation once", async () => {
-    const surfaced = await pollImportantMail(mailDeps([msg("mail-1", "URGENT")]));
+    const surfaced = await pollImportantMail(mailDeps([msg(M1, "URGENT")]));
     expect(surfaced).toBe(1);
 
     const messages = await prisma.message.findMany({
@@ -86,22 +97,36 @@ describe("pollImportantMail (lazy sweep)", () => {
   });
 
   test("a second sweep with the same mail does not re-surface (dedup)", async () => {
-    const surfaced = await pollImportantMail(mailDeps([msg("mail-1", "URGENT")]));
+    const surfaced = await pollImportantMail(mailDeps([msg(M1, "URGENT")]));
     expect(surfaced).toBe(0);
     const messages = await prisma.message.findMany({ where: { conversation: { userId } } });
     expect(messages).toHaveLength(1);
   });
 
+  test("durable claim survives a Redis flush (Postgres-claimed dedup)", async () => {
+    // Surface once with a throwaway cache, then re-sweep with a DIFFERENT fresh
+    // cache that has no memory of the surfaced id — simulating a Redis loss.
+    const first = await pollImportantMail(mailDeps([msg(M5, "Durable")], { cache: fakeCache() }));
+    expect(first).toBe(1);
+    const msgs = await prisma.message.findMany({ where: { conversation: { userId } } });
+    const countBefore = msgs.length;
+
+    const second = await pollImportantMail(mailDeps([msg(M5, "Durable")], { cache: fakeCache() }));
+    expect(second).toBe(0);
+    const after = await prisma.message.findMany({ where: { conversation: { userId } } });
+    expect(after).toHaveLength(countBefore);
+  });
+
   test("a noise verdict is held in cooldown, not surfaced and not re-judged until it lapses", async () => {
     const cache = fakeCache();
     const noiseFilter = async () => ({ surface: false, rationale: "newsletter", category: "noise" as const });
-    const first = await pollImportantMail(mailDeps([msg("mail-2", "Weekly promo")], { cache, filter: noiseFilter }));
+    const first = await pollImportantMail(mailDeps([msg(M2, "Weekly promo")], { cache, filter: noiseFilter }));
     expect(first).toBe(0);
 
     // Within the cooldown window a re-sweep does not re-judge the mail.
     const reJudged: unknown[] = [];
     const again = await pollImportantMail(
-      mailDeps([msg("mail-2", "Weekly promo")], {
+      mailDeps([msg(M2, "Weekly promo")], {
         cache,
         filter: async (...args: unknown[]) => {
           reJudged.push(args);
@@ -116,17 +141,17 @@ describe("pollImportantMail (lazy sweep)", () => {
   test("after the noise cooldown lapses, a previously-noise mail can be re-judged and surface", async () => {
     const cache = fakeCache();
     const noiseFilter = async () => ({ surface: false, rationale: "newsletter", category: "noise" as const });
-    await pollImportantMail(mailDeps([msg("mail-3", "Weekly promo")], { cache, filter: noiseFilter }));
+    await pollImportantMail(mailDeps([msg(M3, "Weekly promo")], { cache, filter: noiseFilter }));
 
     // Fresh cache simulates the cooldown expiring; the mail is now re-judged.
-    const surfaced = await pollImportantMail(mailDeps([msg("mail-3", "Weekly promo")], { cache: fakeCache() }));
+    const surfaced = await pollImportantMail(mailDeps([msg(M3, "Weekly promo")], { cache: fakeCache() }));
     expect(surfaced).toBe(1);
   });
 
   test("judges mail with the email-aware filter kind", async () => {
     const kinds: unknown[] = [];
     const surfaced = await pollImportantMail(
-      mailDeps([msg("mail-4", "Invitation: Product sync")], {
+      mailDeps([msg(M4, "Invitation: Product sync")], {
         cache: fakeCache(),
         filter: async (_userId, _content, kind) => {
           kinds.push(kind);

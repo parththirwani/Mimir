@@ -1,4 +1,4 @@
-import { getLogger, getPrismaClient, MAIL_NOISE_TTL_SECONDS, SURFACED_MAIL_TTL_SECONDS } from "@mimir/backend-core";
+import { getLogger, getPrismaClient, MAIL_NOISE_TTL_SECONDS } from "@mimir/backend-core";
 import { GMAIL_INTEGRATION } from "@mimir/connection-provider";
 import type { Redis } from "ioredis";
 import { fetchEntityData, type GmailMessage } from "../integrations/gmail/gmail.js";
@@ -36,18 +36,6 @@ async function markNoise(cache: Redis, userId: string, messageId: string, ttlSec
   if ((await cache.ttl(key)) === -1) {
     await cache.expire(key, ttlSeconds);
   }
-}
-
-// Atomic claim: returns true only when this call added the member. A concurrent
-// sweep returns false and skips the write. TTL set only on a fresh key so active
-// users don't keep the set alive forever.
-async function markSurfaced(cache: Redis, userId: string, messageId: string): Promise<boolean> {
-  const key = SURFACED_KEY(userId);
-  const added = await cache.sadd(key, messageId);
-  if (added === 1 && (await cache.ttl(key)) === -1) {
-    await cache.expire(key, SURFACED_MAIL_TTL_SECONDS);
-  }
-  return added === 1;
 }
 
 function renderMail(m: GmailMessage): string {
@@ -117,8 +105,22 @@ export async function pollImportantMail(deps: MailPollDeps = {}): Promise<number
           await markNoise(cache, userId, msg.id, noiseTtlSeconds);
           continue;
         }
-        // Claim before writing: only the first claimant in a concurrent sweep proceeds.
-        if (!(await markSurfaced(cache, userId, msg.id))) continue;
+        // Durable, Postgres-claimed dedup — the source of truth. The unique PK
+        // on messageId makes the claim atomic across concurrent sweeps and
+        // survives a Redis flush: a re-poll can never re-surface the same mail.
+        // The Redis set is kept as the cheap fast-path filter only.
+        try {
+          await prisma.surfacedMail.create({ data: { messageId: msg.id, userId } });
+        } catch (e) {
+          if ((e as { code?: string }).code === "P2002") {
+            getLogger().info({ userId, messageId: msg.id }, "mail dedup skip (already claimed in postgres)");
+            // Re-add the fast-path Redis marker so future sweeps skip via cache.
+            await cache.sadd(SURFACED_KEY(userId), msg.id).catch(() => {});
+            continue;
+          }
+          throw e;
+        }
+        await cache.sadd(SURFACED_KEY(userId), msg.id).catch(() => {});
         const conversationId = await ownerConversation(userId);
         const message = await prisma.message.create({
           data: {
