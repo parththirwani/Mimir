@@ -11,6 +11,12 @@ export interface NangoProviderOptions {
   secretKey?: string;
   host?: string;
   store: IntegrationConnectionStore;
+  // Which Nango integration this provider drives. Defaults to Gmail; pass
+  // NOTION_INTEGRATION etc. to reuse the same ConnectionProvider for other
+  // integrations (5.7). Also feeds the local IntegrationConnection.provider row.
+  providerKey?: string;
+  // OAuth user_scopes requested at connect time (Nango's integrations_config_defaults).
+  connectScopes?: string;
 }
 
 // ponytail: the modern Nango SDK dropped createConnection — connect sessions
@@ -22,12 +28,16 @@ export class NangoConnectionProvider implements ConnectionProvider {
   private readonly secretKey?: string;
   private readonly host?: string;
   private readonly store: IntegrationConnectionStore;
+  private readonly providerKey: string;
+  private readonly connectScopes?: string;
   private client?: Nango;
 
   constructor(opts: NangoProviderOptions) {
     this.secretKey = opts.secretKey;
     this.host = opts.host;
     this.store = opts.store;
+    this.providerKey = opts.providerKey ?? GMAIL_INTEGRATION;
+    this.connectScopes = opts.connectScopes;
   }
 
   private nango(): Nango {
@@ -40,17 +50,19 @@ export class NangoConnectionProvider implements ConnectionProvider {
   // redirect, so `authorizationUrl` is unused by the app now; kept for the
   // callback fallback route. `sessionToken` feeds @nangohq/frontend's openConnectUI.
   async initiateOAuth(userId: string): Promise<{ sessionToken: string; authorizationUrl: string }> {
+    const scopes = this.connectScopes ?? "gmail.compose gmail.readonly";
+    // Only send per-connect user_scopes when a provider supplies them. An empty
+    // connectScopes (e.g. Notion, whose scopes are app-level, not per-user) means
+    // "use Nango's configured defaults" — sending an empty string would override
+    // them, so the defaults block is omitted for that case.
+    const defaults =
+      this.connectScopes === undefined || this.connectScopes === "" ? undefined : { [this.providerKey]: { user_scopes: scopes } };
     const { data } = await this.nango().createConnectSession({
       tags: { end_user_id: userId },
-      allowed_integrations: [GMAIL_INTEGRATION],
-      // Request read + write at connect time (Nango's configured google-mail
-      // scopes are read-only by default). compose covers drafts + send; narrow
-      // from gmail.modify once the Google OAuth client no longer needs it.
-      // ponytail: switch to `gmail.compose gmail.readonly` if/when a reconnect
+      allowed_integrations: [this.providerKey],
+      ...(defaults ? { integrations_config_defaults: defaults } : {}),
+      // ponytail: switch Gmail to `gmail.compose gmail.readonly` if/when a reconnect
       // flow re-consents existing users, to drop modify's delete/label power.
-      integrations_config_defaults: {
-        [GMAIL_INTEGRATION]: { user_scopes: "gmail.compose gmail.readonly" },
-      },
     });
     return { sessionToken: data.token, authorizationUrl: data.connect_link };
   }
@@ -61,7 +73,7 @@ export class NangoConnectionProvider implements ConnectionProvider {
   // not set), so the tag filter is required to match.
   async handleCallback(userId: string): Promise<void> {
     const connectionId = await this.findConnectionByTag(userId);
-    if (!connectionId) throw new ConnectionError("not_connected", `no ${GMAIL_INTEGRATION} connection found for user`);
+    if (!connectionId) throw new ConnectionError("not_connected", `no ${this.providerKey} connection found for user`);
     await this.upsertConnection(userId, connectionId, "connected");
   }
 
@@ -80,23 +92,23 @@ export class NangoConnectionProvider implements ConnectionProvider {
   private async findConnectionByTag(userId: string): Promise<string | null> {
     const { connections } = await this.nango().listConnections({
       tags: { end_user_id: userId },
-      integrationId: GMAIL_INTEGRATION,
+      integrationId: this.providerKey,
     });
     return connections[0]?.connection_id ?? null;
   }
 
   async getConnection(userId: string): Promise<{ status: string } | null> {
-    const row = await this.store.findFirst({ where: { userId, provider: GMAIL_INTEGRATION } });
+    const row = await this.store.findFirst({ where: { userId, provider: this.providerKey } });
     return row ? { status: row.status } : null;
   }
 
   // No token caching — Nango refreshes on fetch, and recommends <=5min freshness.
   async getAccessToken(userId: string): Promise<string> {
     const connectionId = await this.findConnectionId(userId);
-    if (!connectionId) throw new ConnectionError("not_connected", `no ${GMAIL_INTEGRATION} connection for user`);
+    if (!connectionId) throw new ConnectionError("not_connected", `no ${this.providerKey} connection for user`);
     let conn;
     try {
-      conn = await this.nango().getConnection(GMAIL_INTEGRATION, connectionId);
+      conn = await this.nango().getConnection(this.providerKey, connectionId);
     } catch (e) {
       const kind = this.nangoErrorKind(e);
       if (kind) throw new ConnectionError(kind, String((e as Error)?.message ?? e));
@@ -109,10 +121,10 @@ export class NangoConnectionProvider implements ConnectionProvider {
   }
 
   async revoke(userId: string): Promise<void> {
-    const row = await this.store.findFirst({ where: { userId, provider: GMAIL_INTEGRATION } });
+    const row = await this.store.findFirst({ where: { userId, provider: this.providerKey } });
     if (!row) return;
     try {
-      await this.nango().deleteConnection(GMAIL_INTEGRATION, row.nangoConnectionId);
+      await this.nango().deleteConnection(this.providerKey, row.nangoConnectionId);
     } catch {
       // ponytail: best-effort — the local row is still removed so the UI flips to
       // disconnected even if Nango's connection is already gone.
@@ -121,7 +133,7 @@ export class NangoConnectionProvider implements ConnectionProvider {
   }
 
   private async findConnectionId(userId: string): Promise<string | null> {
-    const row = await this.store.findFirst({ where: { userId, provider: GMAIL_INTEGRATION } });
+    const row = await this.store.findFirst({ where: { userId, provider: this.providerKey } });
     return row?.nangoConnectionId ?? null;
   }
 
@@ -129,9 +141,9 @@ export class NangoConnectionProvider implements ConnectionProvider {
   // double-callback could race to create a second row; add @@unique([userId,
   // provider]) + a real upsert if that ever happens.
   private async upsertConnection(userId: string, nangoConnectionId: string, status: string): Promise<void> {
-    const existing = await this.store.findFirst({ where: { userId, provider: GMAIL_INTEGRATION } });
+    const existing = await this.store.findFirst({ where: { userId, provider: this.providerKey } });
     if (existing) await this.store.update({ where: { id: existing.id }, data: { nangoConnectionId, status } });
-    else await this.store.create({ data: { userId, provider: GMAIL_INTEGRATION, nangoConnectionId, status } });
+    else await this.store.create({ data: { userId, provider: this.providerKey, nangoConnectionId, status } });
   }
 
   private nangoErrorKind(e: unknown): ConnectionErrorKind | null {

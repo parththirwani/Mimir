@@ -37,11 +37,14 @@ export interface ChatResult {
   finishReason?: string;
   cachedTokens?: number;
   generationId?: string;
+  toolCalls?: { id: string; type: string; function: { name: string; arguments: string } }[];
 }
 
-export type LlmMessageRole = "system" | "user" | "assistant";
+export type LlmMessageRole = "system" | "user" | "assistant" | "tool";
 
 export interface LlmMessage {
   role: LlmMessageRole;
   content: string;
+  toolCalls?: { id: string; type: string; function: { name: string; arguments: string } }[];
+  toolCallId?: string;
 }

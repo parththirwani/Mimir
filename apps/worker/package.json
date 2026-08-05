@@ -7,14 +7,19 @@
     "dev": "OTEL_SERVICE_NAME=mimir-worker bun --hot --env-file=../../.env src/index.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
-    "test": "bun test"
+    "test": "bun test",
+    "redteam": "bun --env-file=../../.env src/redteam.ts"
   },
   "dependencies": {
+    "@browserbasehq/sdk": "^2.16.0",
     "@mimir/backend-core": "workspace:*",
     "@mimir/connection-provider": "workspace:*",
     "@mimir/shared-types": "workspace:*",
+    "@mimir/tasks": "workspace:*",
     "bullmq": "^6.0.6",
-    "ioredis": "^6.0.0"
+    "ioredis": "^6.0.0",
+    "puppeteer-core": "^25.5.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@mimir/eslint-config": "workspace:*",

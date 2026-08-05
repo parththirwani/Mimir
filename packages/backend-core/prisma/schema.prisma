@@ -37,6 +37,7 @@ model User {
   conversations     Conversation[]
   agents            Agent[]
   connections       IntegrationConnection[]
+  mcpServers        McpServer[]
   refreshTokens     RefreshToken[]
   usage             UsageRecord[]
   pushSubscriptions PushSubscription[]
@@ -114,6 +115,7 @@ model Agent {
   lastActiveAt        DateTime    @default(now())
   createdAt           DateTime    @default(now())
   events              AgentEvent[]
+  triggers            Trigger[]
 
   @@index([userId, status])
 }
@@ -128,6 +130,26 @@ model AgentEvent {
 
   @@index([agentId, createdAt])
 }
+
+// First-class triggers (4.11): a natural-language condition scoped to its owning
+// agent, evaluated by the 1-min scheduler tick. Created via cheap-model
+// classification; re-checked at fire time (4.11.6) by the owning agent before it
+// acts. `criteria` is the natural-language condition, not a cron expression —
+// `schedule` is reserved for future user-supplied cadences.
+model Trigger {
+  id          String    @id @default(uuid())
+  agentId     String
+  agent       Agent     @relation(fields: [agentId], references: [id])
+  name        String
+  criteria    String    @db.Text
+  schedule    String?
+  enabled     Boolean   @default(true)
+  lastFiredAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([agentId, enabled])
+  @@index([enabled])
+}
 model OutboxEvent {
   id          String    @id @default(uuid())
   eventType   String
@@ -136,6 +158,27 @@ model OutboxEvent {
   createdAt   DateTime  @default(now())
 
   @@index([processedAt])
+}
+
+// User-supplied MCP servers (5.8): separate settings section, streamable-HTTP
+// transport ONLY. stdio is intentionally off the table for user-added servers —
+// it spawns an arbitrary binary on our infrastructure (arbitrary code exec).
+// The tool schema is fetched + cached at registration; runtime failures map to
+// generic ConnectionError/ToolError only (we don't control the server).
+model McpServer {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id])
+  name         String
+  url          String
+  headers      Json?
+  toolSchema   Json? // cached {name, description, inputSchema}[] from tools/list
+  status       String    @default("pending") // pending | connected | error
+  lastError    String?
+  lastSyncedAt DateTime?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId])
 }
 
 model IntegrationConnection {

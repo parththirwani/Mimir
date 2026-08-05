@@ -6,10 +6,11 @@ import express from "express";
 import passport from "passport";
 import { setupExpressErrorHandler } from "@sentry/node";
 import { authRouter } from "./auth/auth.js";
-import { integrationsRouter } from "./integrations.js";
-import { messageRouter } from "./message.js";
-import { redis } from "./redis.js";
-import { initPubSub, initSocket } from "./socket.js";
+import { integrationsRouter } from "./routes/integrations.js";
+import { messageRouter } from "./routes/message.js";
+import { mcpRouter } from "./routes/mcp.js";
+import { redis } from "./infra/redis.js";
+import { initPubSub, initSocket } from "./infra/socket.js";
 
 const config = getConfig();
 const app = express();
@@ -62,6 +63,7 @@ app.use(passport.initialize());
 app.use("/api/v1/auth", authRouter);
 app.use("/api/v1", integrationsRouter);
 app.use("/api/v1", messageRouter);
+app.use("/api/v1", mcpRouter);
 
 app.get("/health", async (_req, res) => {
   let db = "ok";

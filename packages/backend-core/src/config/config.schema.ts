@@ -12,6 +12,10 @@ export const configSchema = z.object({
   OPENROUTER_API_KEY: z.string().min(1).optional(),
   NANGO_SECRET_KEY: z.string().min(1).optional(),
   NANGO_BASE_URL: z.string().min(1).optional(), // self-hosted Nango only; cloud omits it
+  BROWSERBASE_API_KEY: z.string().min(1).optional(),
+  BROWSERBASE_PROJECT_ID: z.string().min(1).optional(),
+  // Empty (or unset) = allow all; set to a comma-separated list to restrict.
+  BROWSER_ALLOWED_DOMAINS: z.string().optional(),
   SENTRY_DSN: z.string().min(1).optional(),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().min(1).optional(),
   OTEL_EXPORTER_OTLP_HEADERS: z.string().min(1).optional(),

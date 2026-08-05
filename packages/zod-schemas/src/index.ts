@@ -14,3 +14,13 @@ export const messageSchema = z.object({
 });
 
 export type MessageRequest = z.infer<typeof messageSchema>;
+
+// User-supplied MCP server registration (5.8). Transport is streamable-HTTP
+// only — stdio is deliberately not offered for user-added servers.
+export const mcpServerSchema = z.object({
+  name: z.string().min(1).max(100),
+  url: z.string().url(),
+  headers: z.record(z.string(), z.string()).optional(),
+});
+
+export type McpServerRequest = z.infer<typeof mcpServerSchema>;

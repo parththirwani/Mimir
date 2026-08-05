@@ -15,7 +15,7 @@ import { credentialsSchema } from "@mimir/zod-schemas";
 import { createHash, randomBytes } from "node:crypto";
 import { NextFunction, Request, Response, Router } from "express";
 import passport from "passport";
-import { redis } from "./redis.js";
+import { redis } from "../infra/redis.js";
 import { generateRefreshToken, parseCookies, signAccessToken, verifyAccessToken } from "./tokens.js";
 import "./google-auth.js";
 

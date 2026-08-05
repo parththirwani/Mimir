@@ -75,9 +75,44 @@ export function llmConfigFor(useCase: string): LlmUseCaseConfig {
 
 // ponytail: no streaming SDK — plain fetch, retry on 5xx/timeout (maxAttempts in
 // model-config.json). Swap in an SDK when true streaming or per-call backpressure arrive.
+export interface ToolCall {
+  id: string;
+  type: string;
+  function: { name: string; arguments: string };
+}
+
+export interface LlmTool {
+  type: "function";
+  function: { name: string; description?: string; parameters: unknown };
+}
+
+export type ToolChoice = "auto" | "none" | "required" | { type: "function"; function: { name: string } };
+
+// OpenRouter/OpenAI uses snake_case `tool_calls`/`tool_call_id` on the wire; our
+// internal LlmMessage uses camelCase (`toolCalls`/`toolCallId`). Map back before
+// serializing so tool-loop turns (assistant tool_calls + tool results) are
+// recognized by the API. All other fields pass through unchanged.
+export function toWireMessages(messages: LlmMessage[]): Record<string, unknown>[] {
+  return messages.map((m) => {
+    const out: Record<string, unknown> = { role: m.role, content: m.content };
+    if (m.toolCalls) out.tool_calls = m.toolCalls;
+    if (m.toolCallId) out.tool_call_id = m.toolCallId;
+    return out;
+  });
+}
+
+export type LlmCallOptions = {
+  useCase?: string;
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  tools?: LlmTool[];
+  toolChoice?: ToolChoice;
+};
+
 export async function callOpenRouter(
   messages: LlmMessage[],
-  options: { useCase?: string; model?: string; temperature?: number; maxTokens?: number } = {},
+  options: LlmCallOptions = {},
 ): Promise<ChatResult> {
   const apiKey = getConfig().OPENROUTER_API_KEY;
   if (!apiKey) throw new NotConfiguredError();
@@ -91,7 +126,7 @@ export async function callOpenRouter(
   const startedAt = Date.now();
 
   try {
-    const result = await attempt(messages, { model, temperature, maxTokens });
+    const result = await attempt(messages, { model, temperature, maxTokens, tools: options.tools, toolChoice: options.toolChoice });
     span.setAttribute("llm.result.completion_tokens", result.usage.completionTokens);
     span.setAttribute("llm.result.prompt_tokens", result.usage.promptTokens);
     return { ...result, latencyMs: Date.now() - startedAt };
@@ -106,7 +141,7 @@ export async function callOpenRouter(
 
 async function attempt(
   messages: LlmMessage[],
-  params: { model: string; temperature: number; maxTokens: number },
+  params: { model: string; temperature: number; maxTokens: number; tools?: LlmTool[]; toolChoice?: ToolChoice },
 ) {
   const { maxAttempts } = loadConfig().transport;
   let lastError: unknown;
@@ -124,11 +159,21 @@ async function attempt(
 
 async function singleCall(
   messages: LlmMessage[],
-  params: { model: string; temperature: number; maxTokens: number },
+  params: { model: string; temperature: number; maxTokens: number; tools?: LlmTool[]; toolChoice?: ToolChoice },
 ) {
   const { url, timeoutMs } = loadConfig().transport;
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), timeoutMs);
+  const body: Record<string, unknown> = {
+    model: params.model,
+    messages: toWireMessages(messages),
+    max_tokens: params.maxTokens,
+    temperature: params.temperature,
+  };
+  if (params.tools && params.tools.length > 0) {
+    body.tools = params.tools;
+    if (params.toolChoice) body.tool_choice = params.toolChoice;
+  }
   let res: Response;
   try {
     res = await fetch(url, {
@@ -137,7 +182,7 @@ async function singleCall(
         Authorization: `Bearer ${getConfig().OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ model: params.model, messages, max_tokens: params.maxTokens, temperature: params.temperature }),
+      body: JSON.stringify(body),
       signal: ac.signal,
     });
   } catch {
@@ -147,37 +192,53 @@ async function singleCall(
   }
 
   const retriable = res.status >= 500 || res.status === 429;
-  const body = await res.text();
+  const resBody = await res.text();
   if (!res.ok) {
-    throw new OpenRouterError(`OpenRouter error ${res.status}: ${body.slice(0, 500)}`, res.status, retriable);
+    throw new OpenRouterError(`OpenRouter error ${res.status}: ${resBody.slice(0, 500)}`, res.status, retriable);
   }
 
   let json: unknown;
   try {
-    json = JSON.parse(body);
+    json = JSON.parse(resBody);
   } catch {
     throw new OpenRouterError("Malformed OpenRouter response", 502, false);
   }
 
-  const content = (json as { choices?: { message?: { content?: string } }[] })?.choices?.[0]?.message?.content;
-  if (typeof content !== "string") {
-    throw new OpenRouterError("OpenRouter response missing content", 502, false);
+  const parsed = json as {
+    id?: string;
+    model?: string;
+    choices?: [{ finish_reason?: string; message?: { content?: string | null; tool_calls?: ToolCall[] } }];
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
+  };
+  const message = parsed.choices?.[0]?.message;
+  const content = message?.content ?? "";
+  const toolCalls = message?.tool_calls;
+  // A tool-only turn has no content (content is null) — that's valid, not an error.
+  // Null content with NO tool call is a transient provider anomaly (an empty
+  // completion, often finish_reason "length") — retriable so the retry loop gets
+  // a second chance before callers fall back gracefully.
+  if (message?.content === null && !toolCalls) {
+    throw new OpenRouterError(
+      `OpenRouter response missing content and tool_calls (finish_reason=${parsed.choices?.[0]?.finish_reason ?? "unknown"})`,
+      502,
+      true,
+    );
   }
-  const usage = json as { usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } };
-  const promptTokens = usage.usage?.prompt_tokens ?? 0;
-  const completionTokens = usage.usage?.completion_tokens ?? 0;
-  const parsed = json as { id?: string; model?: string; choices?: [{ finish_reason?: string }] };
+  const usage = parsed.usage;
+  const promptTokens = usage?.prompt_tokens ?? 0;
+  const completionTokens = usage?.completion_tokens ?? 0;
   return {
     content,
     model: params.model,
     actualModel: parsed.model,
     finishReason: parsed.choices?.[0]?.finish_reason,
-    cachedTokens: usage.usage?.prompt_tokens_details?.cached_tokens,
+    cachedTokens: usage?.prompt_tokens_details?.cached_tokens,
     generationId: parsed.id,
+    toolCalls,
     usage: {
       promptTokens,
       completionTokens,
-      totalTokens: usage.usage?.total_tokens ?? promptTokens + completionTokens,
+      totalTokens: usage?.total_tokens ?? promptTokens + completionTokens,
     },
   };
 }

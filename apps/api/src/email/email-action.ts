@@ -7,7 +7,7 @@ import {
 } from "@mimir/backend-core";
 import { GMAIL_INTEGRATION, NangoConnectionProvider } from "@mimir/connection-provider";
 import type { LlmMessage } from "@mimir/shared-types";
-import { createGmailDraft, getGmailProfile, sendGmailDraft } from "../../worker/src/gmail.js";
+import { createGmailDraft, getGmailProfile, sendGmailDraft } from "../../../worker/src/integrations/gmail/gmail.js";
 
 const prisma = getPrismaClient();
 
