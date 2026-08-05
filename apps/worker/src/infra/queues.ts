@@ -2,6 +2,7 @@ import { getConfig, getLogger, MAIL_POLL_CRON } from "@mimir/backend-core";
 import { Queue, Worker, type Job, type JobsOptions } from "bullmq";
 import { executeAgent } from "../agent/agent-execution.js";
 import { runDormancySweep } from "../agent/dormancy.js";
+import { sendEmailJob } from "../email/email-send-job.js";
 import { pollImportantMail } from "./mail-poll.js";
 import { runTriggerSweep, TRIGGER_TICK_CRON } from "../agent/triggers.js";
 
@@ -11,6 +12,7 @@ export const AGENT_JOBS = "agent-jobs";
 export const AGENT_TRIGGERS = "agent-triggers";
 export const WEBHOOK_PROCESSING = "webhook-processing";
 export const FAILED_AGENT_JOBS = "failed-agent-jobs";
+export const EMAIL_JOBS = "email-jobs";
 
 const cfg = getConfig();
 const connection = { url: cfg.REDIS_URL, maxRetriesPerRequest: null };
@@ -24,6 +26,7 @@ export const agentJobs = new Queue(AGENT_JOBS, { connection });
 export const agentTriggers = new Queue(AGENT_TRIGGERS, { connection });
 export const webhookProcessing = new Queue(WEBHOOK_PROCESSING, { connection });
 export const failedAgentJobs = new Queue(FAILED_AGENT_JOBS, { connection });
+export const emailJobs = new Queue(EMAIL_JOBS, { connection });
 
 // The explicit `${provider}:${externalId}` job ID is the webhook idempotency
 // mechanism — never let BullMQ auto-generate an ID here.
@@ -103,6 +106,7 @@ export function startWorkers(): Worker[] {
     [agentJobs, executeAgent, { concurrency: 10 }],
     [agentTriggers, agentTriggerProcessor, { concurrency: 20 }],
     [webhookProcessing, noop, {}],
+    [emailJobs, sendEmailJob, { concurrency: 5 }],
   ];
 
   const workers: Worker[] = [];

@@ -4,6 +4,7 @@ import {
   callOpenRouter,
   getLogger,
   getPrismaClient,
+  loadPrompt,
   trackModelCall,
 } from "@mimir/backend-core";
 import type { LlmMessage } from "@mimir/shared-types";
@@ -24,14 +25,7 @@ export const ANSWER_DIRECTLY: Classification = { action: "answer_directly", conf
 // Structured JSON output {action, targetAgentId, taskDescription, confidence}.
 // Plain JSON prompt + parse, not tool-calls — the OpenRouter wrapper has no tool
 // support and parse failure falls back to answer_directly.
-const CLASSIFICATION_SYSTEM = [
-  "You are the Interaction Agent of a personal automation assistant.",
-  'Respond with STRICT JSON only: {"action":"answer_directly"} OR',
-  '{"action":"spawn_agent","targetAgentId":"<uuid|null>","taskDescription":"<one-line task>","confidence":0.0-1.0}.',
-  "spawn_agent means the user wants you to continuously watch/check/act on an external system (email, calendar, a website, a service).",
-  "answer_directly means you can answer the question yourself right now.",
-  "If the user refers to an already-watching agent, set targetAgentId to its id.",
-].join("\n");
+const CLASSIFICATION_SYSTEM = loadPrompt("classification.md");
 
 export async function classifyMessage(userId: string, content: string, activeAgents: { id: string; taskDescription: string }[]): Promise<Classification> {
   const roster =
@@ -161,12 +155,7 @@ export interface TriggerProposal {
 
 export const NO_TRIGGER: TriggerProposal = { hasTrigger: false };
 
-const TRIGGER_SYSTEM = [
-  "You extract an implicit watch-for trigger from a user's automation request.",
-  'Respond with STRICT JSON only: {"hasTrigger":true,"name":"<short>","criteria":"<natural-language condition>"} OR {"hasTrigger":false}.',
-  "hasTrigger is true only when the user asks to be notified when a condition becomes true ('let me know when', 'ping me if', 'tell me as soon as').",
-  '"criteria" is the condition phrased naturally, e.g. "an email arrives from bob@example.com".',
-].join("\n");
+const TRIGGER_SYSTEM = loadPrompt("trigger_extract.md");
 
 export async function classifyTrigger(userId: string, content: string, taskDescription: string): Promise<TriggerProposal> {
   let result;

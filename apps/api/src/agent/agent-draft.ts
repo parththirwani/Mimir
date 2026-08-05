@@ -1,4 +1,4 @@
-import { callOpenRouter, getLogger, getPrismaClient, trackModelCall } from "@mimir/backend-core";
+import { callOpenRouter, getLogger, getPrismaClient, loadPrompt, trackModelCall } from "@mimir/backend-core";
 
 // Pending draft tool resolution for 4.10: the execution agent inserts verbatim
 // content (an email draft, a reply, etc.) into the thread with
@@ -48,13 +48,7 @@ export async function markAgentDraft(messageId: string, status: "executed" | "ca
 
 export type DraftResolveIntent = "confirm" | "cancel" | "ambiguous" | "unrelated";
 
-const RESOLVE_SYSTEM = (label: string) => [
-  "You decide whether a user's message confirms or cancels a pending draft the assistant proposed.",
-  `Pending draft action: ${label || "act on the draft"}.`,
-  'Respond with STRICT JSON only: {"intent":"confirm"|"cancel"|"ambiguous"|"unrelated"}.',
-  "confirm: the user approves proceeding with the draft. cancel: the user declines (the draft stays).",
-  "ambiguous: unclear whether to proceed or cancel. unrelated: the message has nothing to do with the draft.",
-].join("\n");
+const RESOLVE_SYSTEM = (label: string) => loadPrompt("agent_draft_resolve.md").replace("{label}", label || "act on the draft");
 
 export async function resolveAgentDraft(userId: string, content: string, label: string): Promise<DraftResolveIntent> {
   let result;

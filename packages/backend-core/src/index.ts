@@ -14,4 +14,7 @@ export { callOpenRouter, callEmbeddings, llmConfigFor, modelFor, fetchGeneration
 export type { LlmUseCaseConfig, LlmTool, ToolCall, ToolChoice, LlmCallOptions } from "./openrouter.js";
 export { trackEvent } from "./analytics.js";
 export { trackModelCall, backfillCost, rollDailyUsage } from "./usage.js";
-export { loadPrompt, chatSystemPrompt, executionSystemPrompt } from "./prompts.js";
+export { loadPrompt, chatSystemPrompt, executionSystemPrompt, frameResultForUser } from "./prompts.js";
+export type { FrameResultOptions } from "./prompts.js";
+export { generateAck, ACK_FALLBACKS } from "./ack.js";
+export type { AckKind, GenerateAckOptions } from "./ack.js";

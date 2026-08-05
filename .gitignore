@@ -40,6 +40,10 @@ yarn-error.log*
 .DS_Store
 *.pem
 implementation-plan-final.md
+plan.md
+
+# Intent-iteration harness results (regenerated every run)
+scripts/intent-iteration/results/
 
 # Prisma generated client
 packages/backend-core/src/generated/

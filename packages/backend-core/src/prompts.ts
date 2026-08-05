@@ -1,4 +1,8 @@
 import { readFileSync } from "node:fs";
+import { callOpenRouter } from "./openrouter.js";
+import { getLogger } from "./logger.js";
+import { trackModelCall } from "./usage.js";
+import type { LlmMessage } from "@mimir/shared-types";
 
 // Prompt files are read from disk at runtime (same pattern as model-config.json)
 // so they can be edited without a rebuild. They live in
@@ -38,20 +42,7 @@ export function chatSystemPrompt(): string {
       // text, leaking the internal design to the user. Keep this authoritative
       // no-tools declaration LAST so it isn't overridden. Revisit when real tools
       // are actually wired into chat_response.
-      "OPERATIONAL RULES FOR THIS DEPLOYMENT\n" +
-        "You have NO agent, search, drafting, task, or other tool-calling available in this session. " +
-        "You do not communicate with any agents, and there is no sendmessageto_agent, display_draft, " +
-        "task, reactto_message, or any function-calling API for you to invoke.\n" +
-        "NEVER output tool calls, XML tags, JSON tool syntax, or the names of any internal tools or " +
-        "agents — in any situation, including when a user asks how you work or what tools you have. " +
-        "Any background work on the user's behalf happens transparently without you referencing it.\n" +
-        "Assistant messages in this history were ALREADY shown to the user. Never re-deliver, re-summarize, " +
-        "or restate previously delivered content — including 'Important email:' notifications — unless the " +
-        "user explicitly asks you to revisit it. When the user asks for something new ('anything else?', " +
-        "'anything new?', 'what else?'), report only genuinely new information; if you have nothing new, say " +
-        "so plainly instead of repeating what you already told them.\n" +
-        "Respond directly to the user with the information you have. If you don't know or can't act, " +
-        "say so plainly or ask a clarifying question. Never invent a tool call, a search, or a result.",
+      loadPrompt("chat_no_tools.md"),
     ].join("\n\n---\n\n");
   }
   return chatPromptCache;
@@ -72,8 +63,41 @@ export function executionSystemPrompt(opts: {
     opts.context ? `The user's latest message to address: ${opts.context}` : "",
     opts.contextSummary ? `Prior summary of this agent's activity:\n${opts.contextSummary}` : "",
     "You receive event history and current integration data. Produce a concise, useful result for Mimir.",
-    "Report ONLY facts present in the provided integration data and event history. If a requested detail (amount, date, name, count, link, status) is not present in the data, say explicitly that it is not available — never guess, infer, or fabricate it.",
+    loadPrompt("execution_facts.md"),
   ]
     .filter(Boolean)
     .join("\n\n");
+}
+
+// Format the raw execution result into a user-facing message (the missing
+// "execution -> Mimir -> user" hop). The raw result is never shown verbatim; the
+// interaction-agent persona composes the reply so internal agents/integrations/
+// tools stay hidden. Best-effort: a failure returns the original result so a
+// useful surfaced message is never dropped, but it IS logged.
+export interface FrameResultOptions {
+  result: string;
+  userMessage: string;
+  history?: LlmMessage[];
+  /** Injectable LLM caller for tests. */
+  caller?: (messages: LlmMessage[], options?: { useCase: string }) => Promise<{ content: string }>;
+  userId?: string;
+}
+
+export async function frameResultForUser(opts: FrameResultOptions): Promise<string> {
+  const template = loadPrompt("surface.md")
+    .replace("{result}", opts.result)
+    .replace("{userMessage}", opts.userMessage);
+  const messages: LlmMessage[] = [{ role: "system", content: chatSystemPrompt() }, ...(opts.history ?? []), { role: "user", content: template }];
+  const caller = opts.caller ?? (async (msgs, options) => callOpenRouter(msgs, options));
+  try {
+    const res = await caller(messages, { useCase: "surface" });
+    await trackModelCall({ userId: opts.userId ?? "", useCase: "surface", result: res as Parameters<typeof trackModelCall>[0]["result"] });
+    const framed = res.content.trim();
+    return framed || opts.result;
+  } catch (e) {
+    // Framing is best-effort — never drop a surfaced result because it couldn't
+    // be reworded. Log and fall back to the raw content.
+    getLogger().warn({ err: e }, "surface framing failed; surfacing raw result");
+    return opts.result;
+  }
 }

@@ -3,8 +3,10 @@ import {
   AGENT_CONTEXT_MAX_TOKENS,
   callOpenRouter,
   executionSystemPrompt,
+  frameResultForUser,
   getLogger,
   getPrismaClient,
+  loadPrompt,
   trackEvent,
   trackModelCall,
   rollDailyUsage,
@@ -86,7 +88,7 @@ export async function foldOldEvents(agentId: string): Promise<void> {
   const text = foldable.map((e) => `[${e.eventType}] ${JSON.stringify(e.payload)}`).join("\n");
   const result = await callOpenRouter(
     [
-      { role: "system", content: "Summarize these agent events into a compact prior-summary (a few sentences, keep key facts)." },
+      { role: "system", content: loadPrompt("summarize_events.md") },
       { role: "user", content: text },
     ],
     { useCase: "agent_execution" },
@@ -259,23 +261,7 @@ export type FilterKind = "agent" | "email";
 // one-line snippet as noise; the email rubric names the actionable signals
 // (meetings, replies, deadlines) so those surface instead of being dropped.
 export function filterSystemPrompt(kind: FilterKind): string {
-  if (kind === "email") {
-    return [
-      "You judge whether an incoming email deserves to be surfaced to the user as a notification.",
-      "Surface (surface:true) emails that are personal, time-sensitive, or actionable, including:",
-      "- Meeting, calendar, or appointment invitations — subjects like \"Invitation:\", \"Meeting\", \"Appointment\", \"added to calendar\", or accept/decline requests",
-      "- Direct messages and replies from real people, especially on an existing thread (In-Reply-To set)",
-      "- Deadlines, confirmations, bookings, price alerts, delivery/tracking updates, or anything requiring a decision or reply",
-      "- Emails from important senders (manager, client, family, a provider the user engages with)",
-      "Do NOT surface (surface:false):",
-      "- Bulk newsletters, marketing, promotions, product announcements, or social media notifications",
-      "- Mass mailers (emails with a List-Unsubscribe header) unless clearly personal or action-critical",
-      "- Automated notifications with no call to action",
-      "For genuinely ambiguous emails, prefer NOT surfacing over spamming.",
-      'Respond STRICT JSON only: {"surface":true,"rationale":"<why>","category":"actionable"|"fyi"|"noise"}.',
-    ].join("\n");
-  }
-  return 'Decide if this agent result should be surfaced to the user. Respond STRICT JSON only: {"surface":true,"rationale":"<why>","category":"actionable"|"fyi"|"noise"}.';
+  return kind === "email" ? loadPrompt("filter_email.md") : loadPrompt("filter_agent.md");
 }
 
 export async function filterVerdict(userId: string, content: string, kind: FilterKind = "agent"): Promise<FilterVerdict> {
@@ -355,6 +341,7 @@ export async function executeAgent(job: Job): Promise<void> {
         role: "assistant",
         content,
         status: "complete",
+        toolCalls: { type: "gmail.connect", status: "pending" },
       },
     });
     try {
@@ -471,12 +458,17 @@ export async function executeAgent(job: Job): Promise<void> {
     return;
   }
 
-  // Append to the owner conversation AFTER the AgentEvent write.
+  // Append to the owner conversation AFTER the AgentEvent write. The raw result
+  // goes to the AgentEvent (audit trail); the user sees a framed version written
+  // by the interaction-agent persona so internal agents/integrations/tools never
+  // leak into chat (4.x execution -> Mimir -> user hop). Best-effort: if framing
+  // fails, the raw result surfaces rather than dropping the message.
+  const framed = await frameResultForUser({ result: result.content, userMessage: context ?? "" });
   const message = await prisma.message.create({
     data: {
       conversationId: agent.ownerConversationId,
       role: "assistant",
-      content: result.content,
+      content: framed,
       status: "complete",
       model: result.model,
       tokenCount: result.usage.totalTokens,

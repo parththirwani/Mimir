@@ -1,4 +1,4 @@
-import { callOpenRouter, getLogger, getPrismaClient, trackModelCall } from "@mimir/backend-core";
+import { callOpenRouter, getLogger, getPrismaClient, loadPrompt, trackModelCall } from "@mimir/backend-core";
 import type { LlmMessage } from "@mimir/shared-types";
 import { fetchEntityData } from "../integrations/gmail/gmail.js";
 
@@ -14,12 +14,7 @@ export interface TriggerVerdict {
   rationale: string;
 }
 
-const EVAL_SYSTEM = [
-  "You judge whether an agent's trigger condition holds against the latest integration data.",
-  'Respond with STRICT JSON only: {"matches":true|false,"rationale":"<why>"}.',
-  "matches is true ONLY when the data clearly satisfies the condition.",
-  "Never guess beyond the data — if the data doesn't confirm the condition, matches is false.",
-].join("\n");
+const EVAL_SYSTEM = loadPrompt("trigger_eval.md");
 
 export function parseTriggerVerdict(raw: string): TriggerVerdict {
   try {

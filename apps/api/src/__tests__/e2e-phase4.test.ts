@@ -48,6 +48,9 @@ describe("agent end-to-end (real LLM, mocked integration)", () => {
   let deliverySub: Redis;
   const received: Array<{ messageId: string; conversationId: string }> = [];
   const agentIds: string[] = [];
+  // The execute job relayed into the shared agent-jobs queue — remove it so a
+  // running dev worker doesn't drain it against deleted test data.
+  const relayedJobIds: string[] = [];
 
   beforeAll(async () => {
     port = await new Promise<number>((resolve) => {
@@ -99,6 +102,10 @@ describe("agent end-to-end (real LLM, mocked integration)", () => {
     await Promise.all(workers.map((w) => w.close()));
     await deliverySub?.quit();
     server.close();
+    for (const id of relayedJobIds) {
+      const job = await agentJobs.getJob(id);
+      await job?.remove();
+    }
     await prisma.agentEvent.deleteMany({ where: { agentId: { in: agentIds } } });
     await prisma.trigger.deleteMany({ where: { agentId: { in: agentIds } } });
     await prisma.agent.deleteMany({ where: { id: { in: agentIds } } });
@@ -111,6 +118,7 @@ describe("agent end-to-end (real LLM, mocked integration)", () => {
     await prisma.usageRecord.deleteMany({ where: { userId } });
     await prisma.modelCallLog.deleteMany({ where: { userId } });
     await prisma.analyticsEvent.deleteMany({ where: { userId } });
+    await prisma.integrationConnection.deleteMany({ where: { userId } });
     await prisma.user.delete({ where: { id: userId } });
   });
 
@@ -150,6 +158,7 @@ describe("agent end-to-end (real LLM, mocked integration)", () => {
         { agentId: agent!.id, trigger: "user_message" },
         { jobId: `outbox-${outbox!.id}` },
       );
+      relayedJobIds.push(`outbox-${outbox!.id}`);
       await prisma.outboxEvent.update({ where: { id: outbox!.id }, data: { processedAt: new Date() } });
 
       // 6. Execution — AgentEvent written (surfaced OR discarded, never skipped).

@@ -13,7 +13,6 @@ import { ConnectionError } from "@mimir/connection-provider";
 import { Router } from "express";
 import { requireAuth } from "../auth/auth.js";
 import { mapLLMError } from "../infra/errors.js";
-import { GMAIL_INTEGRATION } from "@mimir/connection-provider";
 import {
   EMAIL_ACTION_TYPE,
   EMAIL_BODY_MAX,
@@ -23,12 +22,13 @@ import {
   createEmailDraft,
   emailActionHint,
   findPendingEmailAction,
+  isGmailConnected,
   markEmailAction,
   markGmailExpired,
   proposeEmailAction,
   resolvePendingAction,
-  sendPendingEmail,
 } from "../email/email-action.js";
+import { writeAck } from "../agent/ack.js";
 import {
   classifyMessage,
   classifyTrigger,
@@ -151,26 +151,39 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     const intent = await resolvePendingAction(userId, content, pendingAction.draft);
     let replyContent: string;
     if (intent === "confirm") {
-      try {
-        const sentId = await sendPendingEmail(userId, pendingAction.draftId);
-        await markEmailAction(pendingAction.messageId, "executed", { sentMessageId: sentId });
-        await trackEvent(userId, "email_sent", {
-          conversationId,
-          draftId: pendingAction.draftId,
-          to: pendingAction.draft.to,
-          subject: pendingAction.draft.subject,
-        });
-        replyContent = `Sent to ${pendingAction.draft.to}: "${pendingAction.draft.subject}".`;
-      } catch (e) {
-        if (e instanceof ConnectionError) {
-          getLogger().warn({ err: e }, "email send blocked by expired gmail token");
-          await markGmailExpired(userId);
-          replyContent = "Your Gmail connection expired. Reconnect Gmail, then tell me to send the draft again.";
-        } else {
-          getLogger().error({ err: e }, "email send failed; draft kept pending");
-          replyContent = "The email couldn't be sent right now. It's still in your Gmail drafts — try again in a moment.";
-        }
-      }
+      // Async send: the acknowledgment returns immediately, the actual Gmail
+      // send runs as an outbox->worker job that writes the "Sent" result and
+      // pushes it via socket. The draft stays pending until the worker marks it
+      // executed — a failed job leaves it pending so the user can re-confirm.
+      const ack = await writeAck({
+        userId,
+        conversationId,
+        parentMessageId: userMsg.id,
+        kind: "send",
+        context: `send the pending email draft to ${pendingAction.draft.to} ("${pendingAction.draft.subject}")`,
+      });
+      await prisma.outboxEvent.create({
+        data: {
+          eventType: "email_send",
+          payload: {
+            userId,
+            draftId: pendingAction.draftId,
+            messageId: pendingAction.messageId,
+            conversationId,
+            to: pendingAction.draft.to,
+            subject: pendingAction.draft.subject,
+            parentMessageId: userMsg.id,
+          },
+        },
+      });
+      await trackEvent(userId, "email_send_enqueued", {
+        conversationId,
+        draftId: pendingAction.draftId,
+        to: pendingAction.draft.to,
+        subject: pendingAction.draft.subject,
+      });
+      res.status(200).json(ack);
+      return;
     } else if (intent === "cancel") {
       await markEmailAction(pendingAction.messageId, "cancelled");
       await trackEvent(userId, "email_cancelled", {
@@ -229,9 +242,15 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
           conversationId,
           agentId: pendingAgentDraft.agentId,
         });
-        replyContent = pendingAgentDraft.actionLabel
-          ? `Got it — I'll ${pendingAgentDraft.actionLabel.toLowerCase()}.`
-          : "Got it — I'll act on that draft.";
+        const ack = await writeAck({
+          userId,
+          conversationId,
+          parentMessageId: userMsg.id,
+          kind: "agent_draft_confirm",
+          context: pendingAgentDraft.actionLabel ?? "act on the confirmed draft",
+        });
+        res.status(200).json(ack);
+        return;
       } else if (intent === "cancel") {
         await markAgentDraft(pendingAgentDraft.messageId, "cancelled");
         await trackEvent(userId, "agent_draft_cancelled", {
@@ -274,10 +293,14 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
   // call; non-send email mentions ("watch my email for ...") fall through to the
   // interaction agent below.
   if (emailActionHint(content)) {
-    const proposal = await proposeEmailAction(userId, [...messages, { role: "user", content }]);
+    // Connection state is checked BEFORE the proposal call and fed to the LLM so
+    // the model never promises to send while disconnected. The connect prompt is
+    // only ever written after this real (Nango-reconciled) state check.
+    const gmailConnected = await isGmailConnected(userId);
+    const proposal = await proposeEmailAction(userId, [...messages, { role: "user", content }], gmailConnected ? "connected" : "not_connected");
     if (proposal.intent === "send_email") {
-      // A real send needs Gmail — short-circuit to a connect prompt before drafting.
-      const gmailConnected = await prisma.integrationConnection.findFirst({ where: { userId, provider: GMAIL_INTEGRATION } });
+      // A real send needs Gmail — short-circuit to a connect prompt (with an
+      // in-chat Connect button) before drafting.
       if (!gmailConnected) {
         const reply = await prisma.message.create({
           data: {
@@ -286,6 +309,7 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
             content: "Connect Gmail first, then I can write and send email for you.",
             status: "complete",
             parentMessageId: userMsg.id,
+            toolCalls: { type: "gmail.connect", status: "pending" },
           },
         });
         res.status(200).json({
@@ -330,6 +354,15 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
         return;
       }
       await cancelPendingEmailActions(conversationId);
+      // Universal acknowledgment first: the user hears "preparing the draft"
+      // (never "sending") before the Gmail draft is created.
+      await writeAck({
+        userId,
+        conversationId,
+        parentMessageId: userMsg.id,
+        kind: "draft",
+        context: `prepare a draft email to ${proposal.to} about "${proposal.subject}"`,
+      });
       let draft: { draftId: string; messageId: string };
       try {
         draft = await createEmailDraft(userId, { to: proposal.to, subject: proposal.subject, body: proposal.body });
@@ -344,6 +377,7 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
               content: "Your Gmail connection expired. Reconnect Gmail, then ask me to draft that again.",
               status: "complete",
               parentMessageId: userMsg.id,
+              toolCalls: { type: "gmail.connect", status: "pending" },
             },
           });
           res.status(200).json({
@@ -425,89 +459,92 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
           },
         });
         getLogger().info({ agentId: target.id, conversationId }, "existing agent retargeted via outbox");
-        const reply = await prisma.message.create({
-          data: {
-            conversationId,
-            role: "assistant",
-            content: `Got it — I'm already on that. I'll surface anything relevant here.`,
-            status: "complete",
-            parentMessageId: userMsg.id,
-          },
+        const ack = await writeAck({
+          userId,
+          conversationId,
+          parentMessageId: userMsg.id,
+          kind: "retarget",
+          context: `resume the existing watch: ${target.taskDescription}`,
         });
-        res.status(200).json({
-          message: {
-            id: reply.id,
-            conversationId,
-            role: "assistant",
-            content: reply.content,
-            createdAt: reply.createdAt,
-          },
-          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          latencyMs: 0,
-        });
+        res.status(200).json(ack);
         return;
       }
     }
 
     const { duplicate, embedding: dedupEmbedding } = await findDuplicateAgent(userId, classification.taskDescription);
-    let ack: string;
     if (duplicate) {
-      ack = `It looks like I'm already watching something very similar: "${duplicate.taskDescription}". Want me to keep doing that, or start fresh?`;
-    } else {
-      // dedupEmbedding is set when findDuplicateAgent's embed succeeded; only
-      // re-embed on the rare failure path (dedup degrades to no-match).
-      let embedding = dedupEmbedding;
-      if (!embedding) {
-        try {
-          embedding = await embedTask(classification.taskDescription);
-        } catch (e) {
-          getLogger().error({ err: e }, "embedding failed; refusing to spawn agent");
-          const mapped = mapLLMError(e);
-          res.status(mapped.status).json({ error: { code: mapped.code, message: mapped.message } });
-          return;
-        }
-      }
-      const { agentId } = await spawnAgent({
-        userId,
-        ownerConversationId: conversationId,
-        taskDescription: classification.taskDescription,
-        embedding,
-        context: content,
+      // A functional dedup question, not a work ack — kept fixed so the choice is
+      // unambiguous.
+      const reply = await prisma.message.create({
+        data: {
+          conversationId,
+          role: "assistant",
+          content: `It looks like I'm already watching something very similar: "${duplicate.taskDescription}". Want me to keep doing that, or start fresh?`,
+          status: "complete",
+          parentMessageId: userMsg.id,
+        },
       });
-      await trackEvent(userId, "agent_spawned", { conversationId, agentId });
-      // Cheap-model trigger extraction (4.11): an implicit "watch-for" condition
-      // gets its own Trigger row so the 1-min tick can fire the agent. A misfire
-      // here is harmless — no trigger just means the agent runs on user asks only.
-      const triggerProposal = await classifyTrigger(userId, content, classification.taskDescription);
-      if (triggerProposal.hasTrigger && triggerProposal.criteria) {
-        await prisma.trigger.create({
-          data: {
-            agentId,
-            name: triggerProposal.name ?? "trigger",
-            criteria: triggerProposal.criteria,
-          },
-        });
-        await trackEvent(userId, "agent_trigger_created", { conversationId, agentId });
-      }
-      getLogger().info({ agentId, conversationId }, "agent spawned via outbox");
-      ack = `Done — I'll take care of that. I'll surface anything relevant here.`;
+      getLogger().info({ conversationId, duplicate: true }, "agent spawn acknowledged (duplicate)");
+      res.status(200).json({
+        message: {
+          id: reply.id,
+          conversationId,
+          role: "assistant",
+          content: reply.content,
+          createdAt: reply.createdAt,
+        },
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        latencyMs: 0,
+        possibleDuplicateOf: duplicate.id,
+      });
+      return;
     }
-    const reply = await prisma.message.create({
-      data: { conversationId, role: "assistant", content: ack, status: "complete", parentMessageId: userMsg.id },
+
+    // dedupEmbedding is set when findDuplicateAgent's embed succeeded; only
+    // re-embed on the rare failure path (dedup degrades to no-match).
+    let embedding = dedupEmbedding;
+    if (!embedding) {
+      try {
+        embedding = await embedTask(classification.taskDescription);
+      } catch (e) {
+        getLogger().error({ err: e }, "embedding failed; refusing to spawn agent");
+        const mapped = mapLLMError(e);
+        res.status(mapped.status).json({ error: { code: mapped.code, message: mapped.message } });
+        return;
+      }
+    }
+    const { agentId } = await spawnAgent({
+      userId,
+      ownerConversationId: conversationId,
+      taskDescription: classification.taskDescription,
+      embedding,
+      context: content,
     });
-    getLogger().info({ conversationId, duplicate: Boolean(duplicate) }, "agent spawn acknowledged");
-    res.status(200).json({
-      message: {
-        id: reply.id,
-        conversationId,
-        role: "assistant",
-        content: reply.content,
-        createdAt: reply.createdAt,
-      },
-      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-      latencyMs: 0,
-      possibleDuplicateOf: duplicate?.id,
+    await trackEvent(userId, "agent_spawned", { conversationId, agentId });
+    // Cheap-model trigger extraction (4.11): an implicit "watch-for" condition
+    // gets its own Trigger row so the 1-min tick can fire the agent. A misfire
+    // here is harmless — no trigger just means the agent runs on user asks only.
+    const triggerProposal = await classifyTrigger(userId, content, classification.taskDescription);
+    if (triggerProposal.hasTrigger && triggerProposal.criteria) {
+      await prisma.trigger.create({
+        data: {
+          agentId,
+          name: triggerProposal.name ?? "trigger",
+          criteria: triggerProposal.criteria,
+        },
+      });
+      await trackEvent(userId, "agent_trigger_created", { conversationId, agentId });
+    }
+    getLogger().info({ agentId, conversationId }, "agent spawned via outbox");
+    const ack = await writeAck({
+      userId,
+      conversationId,
+      parentMessageId: userMsg.id,
+      kind: "spawn",
+      context: `start watching: ${classification.taskDescription}`,
     });
+    getLogger().info({ conversationId, duplicate: false }, "agent spawn acknowledged");
+    res.status(200).json(ack);
     return;
   }
 

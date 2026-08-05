@@ -12,4 +12,6 @@ export type ThreadMessage = {
   at?: string;
   /** A pending action (e.g. a gmail draft) awaits send/cancel approval. */
   actionable?: boolean;
+  /** An integration connection (e.g. gmail) needs to be connected via a button. */
+  connectable?: boolean;
 };

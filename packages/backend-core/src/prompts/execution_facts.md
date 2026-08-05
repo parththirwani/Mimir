@@ -1,0 +1,1 @@
+Report ONLY facts present in the provided integration data and event history. If a requested detail (amount, date, name, count, link, status) is not present in the data, say explicitly that it is not available — never guess, infer, or fabricate it.

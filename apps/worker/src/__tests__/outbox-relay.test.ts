@@ -9,14 +9,21 @@ const { getPrismaClient } = await import("@mimir/backend-core");
 const { drainOutbox } = await import("../infra/outbox-relay.js");
 
 const prisma = getPrismaClient();
-// Own connection so this file's afterAll doesn't fight queues.test.ts's singletons.
+// Own connections so this file's afterAll doesn't fight queues.test.ts's singletons.
 const agentJobs = new Queue("agent-jobs", {
+  connection: { url: process.env.REDIS_URL, maxRetriesPerRequest: null },
+});
+const emailJobs = new Queue("email-jobs", {
   connection: { url: process.env.REDIS_URL, maxRetriesPerRequest: null },
 });
 
 const agentId = `test-agent-${Date.now()}`;
 const userId = `outbox-test-user-${Date.now()}`;
 const convId = `outbox-test-conv-${Date.now()}`;
+// The dev worker owns the real agent-jobs/email-jobs queues (shared Redis), so
+// a job enqueued here and left behind gets drained by the running worker against
+// already-deleted test data. Track what we enqueue and remove it in afterAll.
+const enqueuedJobIds: string[] = [];
 
 beforeAll(async () => {
   await prisma.user.create({
@@ -29,11 +36,18 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  for (const id of enqueuedJobIds) {
+    const [agentJob, emailJob] = await Promise.all([agentJobs.getJob(id), emailJobs.getJob(id)]);
+    await agentJob?.remove();
+    await emailJob?.remove();
+  }
   await prisma.agent.deleteMany({ where: { id: agentId } });
   await prisma.outboxEvent.deleteMany({ where: { payload: { path: ["agentId"], equals: agentId } } });
+  await prisma.outboxEvent.deleteMany({ where: { eventType: "email_send" } });
   await prisma.conversation.deleteMany({ where: { id: convId } });
   await prisma.user.delete({ where: { id: userId } });
   await agentJobs.close();
+  await emailJobs.close();
 });
 
 async function poll<T>(fn: () => Promise<T>, ok: (t: T) => boolean, timeoutMs = 5000): Promise<T> {
@@ -55,6 +69,7 @@ describe("outbox relay", () => {
     const enqueued = await drainOutbox(agentJobs);
 
     expect(enqueued).toBe(1);
+    enqueuedJobIds.push(`outbox-${row.id}`);
     await poll(
       () => prisma.outboxEvent.findUnique({ where: { id: row.id } }),
       (r) => r?.processedAt != null,
@@ -73,5 +88,31 @@ describe("outbox relay", () => {
     expect(enqueued).toBe(0);
     const after = await prisma.outboxEvent.findUnique({ where: { id: row.id } });
     expect(after?.processedAt).not.toBeNull();
+  });
+
+  test("an email_send row is routed to email-jobs and marked processed", async () => {
+    const payload = {
+      userId,
+      draftId: "draft-1",
+      messageId: "msg-1",
+      conversationId: convId,
+      to: "alice@example.com",
+      subject: "Hi",
+      parentMessageId: "parent-1",
+    };
+    const row = await prisma.outboxEvent.create({
+      data: { eventType: "email_send", payload },
+    });
+
+    const enqueued = await drainOutbox(agentJobs, emailJobs);
+
+    expect(enqueued).toBe(1);
+    enqueuedJobIds.push(`outbox-${row.id}`);
+    await poll(
+      () => prisma.outboxEvent.findUnique({ where: { id: row.id } }),
+      (r) => r?.processedAt != null,
+    );
+    const job = await emailJobs.getJob(`outbox-${row.id}`);
+    expect(job?.data).toMatchObject(payload);
   });
 });

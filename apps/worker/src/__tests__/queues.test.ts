@@ -6,7 +6,7 @@ process.env.DATABASE_URL = "postgres://mimir:mimir@localhost:5434/mimir";
 process.env.REDIS_URL = "redis://localhost:6379";
 process.env.JWT_SECRET = "queue-test-secret";
 
-const { agentJobs, agentTriggerProcessor, agentTriggers, failedAgentJobs, scheduleMailPollSweep, startWorkers, webhookProcessing, wireDlq } = await import("../infra/queues.js");
+const { agentJobs, agentTriggerProcessor, agentTriggers, emailJobs, failedAgentJobs, scheduleMailPollSweep, startWorkers, webhookProcessing, wireDlq } = await import("../infra/queues.js");
 
 const connection = { url: process.env.REDIS_URL, maxRetriesPerRequest: null };
 const workers = startWorkers();
@@ -28,6 +28,7 @@ afterAll(async () => {
     agentTriggers.close(),
     webhookProcessing.close(),
     failedAgentJobs.close(),
+    emailJobs.close(),
   ]);
 });
 

@@ -52,6 +52,7 @@ function toThreadMessage(message: ApiMessage): ThreadMessage {
     at: message.createdAt ? formatAt(message.createdAt) : undefined,
     actionable:
       message.toolCalls?.type === "gmail.send_email" && message.toolCalls.status === "pending",
+    connectable: message.toolCalls?.type === "gmail.connect" && message.toolCalls.status === "pending",
   };
 }
 
@@ -286,6 +287,7 @@ export default function ChatPage() {
                 setStreamingId(null);
               }}
               onAction={(id, action) => post(action)}
+              onConnect={connectGmail}
             />
 
             <div className="flex items-center gap-2 pt-6">

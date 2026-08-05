@@ -11,9 +11,11 @@ type Props = {
   onStreamDone: () => void;
   /** Approve a pending action (e.g. a gmail draft): "send" or "cancel". */
   onAction?: (id: string, action: "send" | "cancel") => void;
+  /** Connect a missing integration (e.g. gmail) from a message's connect button. */
+  onConnect?: () => void;
 };
 
-export function ThreadBubbles({ messages, streamingId, onStreamDone, onAction }: Props) {
+export function ThreadBubbles({ messages, streamingId, onStreamDone, onAction, onConnect }: Props) {
   const lastId = messages[messages.length - 1]?.id;
 
   return (
@@ -63,6 +65,18 @@ export function ThreadBubbles({ messages, streamingId, onStreamDone, onAction }:
                 <span className="mt-1 px-1 text-xs text-muted-foreground opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
                   {message.at}
                 </span>
+              ) : null}
+              {message.connectable && onConnect ? (
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={onConnect}
+                    className="flex items-center gap-2 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground focus-visible:outline-none focus-visible:border-signal"
+                  >
+                    <span className="size-1.5 rounded-full bg-signal" aria-hidden />
+                    Connect Gmail
+                  </button>
+                </div>
               ) : null}
               {message.actionable && onAction ? (
                 <div className="mt-2 flex gap-2">

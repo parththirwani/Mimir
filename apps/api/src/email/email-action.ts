@@ -3,11 +3,12 @@ import {
   getConfig,
   getLogger,
   getPrismaClient,
+  loadPrompt,
   trackModelCall,
 } from "@mimir/backend-core";
 import { GMAIL_INTEGRATION, NangoConnectionProvider } from "@mimir/connection-provider";
 import type { LlmMessage } from "@mimir/shared-types";
-import { createGmailDraft, getGmailProfile, sendGmailDraft } from "../../../worker/src/integrations/gmail/gmail.js";
+import { createGmailDraft, getGmailProfile } from "../../../worker/src/integrations/gmail/gmail.js";
 
 const prisma = getPrismaClient();
 
@@ -29,6 +30,23 @@ export interface PendingEmailAction {
 
 export function emailActionHint(content: string): boolean {
   return EMAIL_HINT_RE.test(content);
+}
+
+// Real connection state, not just "a row exists": heal a missing local row from
+// Nango first (same reconciliation as GET /integrations/gmail), and treat an
+// expired row as disconnected so the user is prompted to reconnect before work.
+export async function isGmailConnected(userId: string): Promise<boolean> {
+  const provider = gmailProvider();
+  let connection = await provider.getConnection(userId);
+  if (!connection) {
+    try {
+      await provider.syncConnection(userId);
+    } catch (e) {
+      getLogger().warn({ err: e, userId }, "gmail reconciliation failed");
+    }
+    connection = await provider.getConnection(userId);
+  }
+  return connection != null && connection.status !== "expired";
 }
 
 // The pending draft is carried on the confirmation Message's toolCalls column —
@@ -76,18 +94,23 @@ export async function cancelPendingEmailActions(conversationId: string): Promise
 
 // Structured LLM call — same pattern as classifyMessage/filterVerdict: plain
 // JSON in, parse-or-safely-ignore out. A parse failure must never block chat.
-const PROPOSE_SYSTEM = [
-  "You are the email drafting assistant of a personal assistant.",
-  'Respond with STRICT JSON only: {"intent":"send_email","to":"<recipient@example.com>","subject":"...","body":"..."} OR {"intent":"none"}.',
-  'intent is "send_email" ONLY when the user explicitly asks you to write, draft, or send an email. Otherwise "none".',
-  '"to" is the recipient address; if the user gave only a name, leave it empty.',
-  '"subject" and "body" are the full draft — body is the complete email text.',
-].join("\n");
+const PROPOSE_SYSTEM = loadPrompt("email_propose.md");
 
-export async function proposeEmailAction(userId: string, history: LlmMessage[]): Promise<EmailActionProposal> {
+export async function proposeEmailAction(
+  userId: string,
+  history: LlmMessage[],
+  gmailState: "connected" | "not_connected" = "connected",
+): Promise<EmailActionProposal> {
   let result;
   try {
-    result = await callOpenRouter([{ role: "system", content: PROPOSE_SYSTEM }, ...history], { useCase: "email_proposal" });
+    result = await callOpenRouter(
+      [
+        { role: "system", content: PROPOSE_SYSTEM },
+        { role: "system", content: `User's Gmail connection status: ${gmailState}.` },
+        ...history,
+      ],
+      { useCase: "email_proposal" },
+    );
   } catch (e) {
     getLogger().error({ err: e }, "email proposal call failed; continuing without email action");
     await trackModelCall({ userId, useCase: "email_proposal", error: (e as Error)?.message ?? String(e) });
@@ -112,13 +135,8 @@ export function parseEmailAction(raw: string): EmailActionProposal {
   }
 }
 
-const RESOLVE_SYSTEM = (draft: { to: string; subject: string }) => [
-  "You decide whether a user's message confirms or cancels a pending email draft.",
-  `Pending draft: to "${draft.to}", subject "${draft.subject}".`,
-  'Respond with STRICT JSON only: {"intent":"confirm"|"cancel"|"ambiguous"|"unrelated"}.',
-  "confirm: the user approves sending the draft. cancel: the user declines (the draft stays).",
-  "ambiguous: unclear whether to send or cancel. unrelated: the message has nothing to do with the draft.",
-].join("\n");
+const RESOLVE_SYSTEM = (draft: { to: string; subject: string }) =>
+  loadPrompt("email_resolve.md").replace("{to}", draft.to).replace("{subject}", draft.subject);
 
 export async function resolvePendingAction(userId: string, content: string, draft: { to: string; subject: string }): Promise<ResolveIntent> {
   let result;
@@ -163,11 +181,6 @@ export async function createEmailDraft(userId: string, draft: { to: string; subj
   const from = await getGmailProfile(token);
   const created = await createGmailDraft(token, { from, ...draft });
   return { draftId: created.id, messageId: created.messageId };
-}
-
-export async function sendPendingEmail(userId: string, draftId: string): Promise<string> {
-  const token = await gmailProvider().getAccessToken(userId);
-  return sendGmailDraft(token, draftId);
 }
 
 // Same fail-fast handling as agent-execution: an expired/revoked token flips the
