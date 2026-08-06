@@ -197,13 +197,15 @@ model McpServer {
 }
 
 model IntegrationConnection {
-  id                String   @id @default(uuid())
-  userId            String
-  user              User     @relation(fields: [userId], references: [id])
-  provider          String
-  nangoConnectionId String   @unique
-  status            String
-  createdAt         DateTime @default(now())
+  id       String @id @default(uuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id])
+  provider String
+  // Opaque upstream connection id: the Nango connection_id OR the Composio
+  // connected_account id. Provider-agnostic — either provider stores its id here.
+  connectionId String @unique
+  status       String
+  createdAt    DateTime @default(now())
 
   @@index([userId, provider])
 }

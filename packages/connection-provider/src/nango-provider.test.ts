@@ -63,7 +63,7 @@ describe("NangoConnectionProvider", () => {
     await provider().handleCallback(userId);
     expect(seen.listConnections).toBe(1);
     const row = await prisma.integrationConnection.findFirst({ where: { userId, provider: "google-mail" } });
-    expect(row?.nangoConnectionId).toBe(`nango-${userId}`);
+    expect(row?.connectionId).toBe(`nango-${userId}`);
     expect(row?.status).toBe("connected");
   });
 
@@ -88,7 +88,7 @@ describe("syncConnection (reconciliation backstop)", () => {
   test("upserts the tagged Nango connection when no local row exists", async () => {
     expect(await provider().syncConnection(syncUserId)).toBe(true);
     const row = await prisma.integrationConnection.findFirst({ where: { userId: syncUserId, provider: "google-mail" } });
-    expect(row?.nangoConnectionId).toBe(`nango-${syncUserId}`);
+    expect(row?.connectionId).toBe(`nango-${syncUserId}`);
     expect(row?.status).toBe("connected");
   });
 
@@ -97,7 +97,7 @@ describe("syncConnection (reconciliation backstop)", () => {
     expect(await provider().syncConnection(hookUserId, "nango-explicit")).toBe(true);
     expect(seen.listConnections).toBe(calls);
     const row = await prisma.integrationConnection.findFirst({ where: { userId: hookUserId, provider: "google-mail" } });
-    expect(row?.nangoConnectionId).toBe("nango-explicit");
+    expect(row?.connectionId).toBe("nango-explicit");
   });
 
   test("returns false when Nango has no tagged connection", async () => {
@@ -111,7 +111,7 @@ describe("syncConnection (reconciliation backstop)", () => {
     expect(await provider().syncConnection(syncUserId)).toBe(true);
     expect(seen.listConnections).toBe(calls);
     const row = await prisma.integrationConnection.findFirst({ where: { userId: syncUserId, provider: "google-mail" } });
-    expect(row?.nangoConnectionId).toBe(before?.nangoConnectionId);
+    expect(row?.connectionId).toBe(before?.connectionId);
     expect(row?.status).toBe("connected");
   });
 });

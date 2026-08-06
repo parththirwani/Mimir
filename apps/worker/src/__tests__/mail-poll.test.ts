@@ -71,7 +71,7 @@ function mailDeps(messages: ReturnType<typeof msg>[], overrides: Partial<MailPol
 beforeAll(async () => {
   await prisma.user.create({ data: { id: userId, email, passwordHash: "x" } });
   await prisma.integrationConnection.create({
-    data: { userId, provider: GMAIL_INTEGRATION, nangoConnectionId: `nango-${userId}`, status: "connected" },
+    data: { userId, provider: GMAIL_INTEGRATION, connectionId: `nango-${userId}`, status: "connected" },
   });
   await prisma.conversation.create({ data: { userId } });
 });

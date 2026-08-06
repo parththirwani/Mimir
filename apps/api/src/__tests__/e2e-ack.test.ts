@@ -105,7 +105,7 @@ try {
   const probeUserId = `ack-probe-${randomUUID()}`;
   await prisma.user.create({ data: { id: probeUserId, email: `${probeUserId}@test.local`, passwordHash: "x" } });
   await prisma.integrationConnection.create({
-    data: { userId: probeUserId, provider: "google-mail", nangoConnectionId: "nc-probe", status: "connected" },
+    data: { userId: probeUserId, provider: "google-mail", connectionId: "nc-probe", status: "connected" },
   });
   try {
     const provider = new NangoConnectionProvider({ secretKey: "k", store: prisma.integrationConnection });
@@ -300,7 +300,7 @@ ackDescribe("universal acknowledgment end-to-end (real LLM, mocked gmail/nango)"
     const { accessToken, userId } = await registerUser(app, port);
     users.push(userId);
     await prisma.integrationConnection.create({
-      data: { userId, provider: "google-mail", nangoConnectionId: `nc-${userId}`, status: "connected" },
+      data: { userId, provider: "google-mail", connectionId: `nc-${userId}`, status: "connected" },
     });
     const conversationId = await getConversation(port, accessToken);
     conversations.push(conversationId);
@@ -348,7 +348,7 @@ ackDescribe("universal acknowledgment end-to-end (real LLM, mocked gmail/nango)"
     const { accessToken, userId } = await registerUser(app, port);
     users.push(userId);
     await prisma.integrationConnection.create({
-      data: { userId, provider: "google-mail", nangoConnectionId: `nc-${userId}`, status: "connected" },
+      data: { userId, provider: "google-mail", connectionId: `nc-${userId}`, status: "connected" },
     });
     const conversationId = await getConversation(port, accessToken);
     conversations.push(conversationId);

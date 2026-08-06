@@ -7,11 +7,12 @@ type Props = {
   open: boolean;
   onClose: () => void;
   onConnect: (name: string) => void;
+  onDisconnect?: (name: string) => void;
   items: Integration[];
   onLogout?: () => void;
 };
 
-export function ConnectorsPanel({ open, onClose, onConnect, items, onLogout }: Props) {
+export function ConnectorsPanel({ open, onClose, onConnect, onDisconnect, items, onLogout }: Props) {
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent) => {
@@ -63,6 +64,15 @@ export function ConnectorsPanel({ open, onClose, onConnect, items, onLogout }: P
                     <span className="flex items-center gap-2">
                       <span className="size-1.5 rounded-full bg-signal" aria-hidden />
                       <span className="text-xs text-muted-foreground">Connected</span>
+                      {onDisconnect ? (
+                        <button
+                          type="button"
+                          onClick={() => onDisconnect(item.name)}
+                          className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:border-red-400/50 hover:text-red-300 focus-visible:outline-none focus-visible:border focus-visible:border-signal"
+                        >
+                          Disconnect
+                        </button>
+                      ) : null}
                     </span>
                   ) : (
                     <button

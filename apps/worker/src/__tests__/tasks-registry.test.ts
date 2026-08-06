@@ -32,7 +32,7 @@ describe("agentTasksFor (4.9 per-user roster)", () => {
 
   test("notion task appears when the user has a connected Notion", async () => {
     await prisma.integrationConnection.create({
-      data: { userId, provider: NOTION_INTEGRATION, nangoConnectionId: `nango-${userId}`, status: "connected" },
+      data: { userId, provider: NOTION_INTEGRATION, connectionId: `nango-${userId}`, status: "connected" },
     });
     const tasks = await agentTasksFor(userId);
     expect(tasks.map((t) => t.name)).toContain("notion_search");

@@ -124,7 +124,7 @@ export class NangoConnectionProvider implements ConnectionProvider {
     const row = await this.store.findFirst({ where: { userId, provider: this.providerKey } });
     if (!row) return;
     try {
-      await this.nango().deleteConnection(this.providerKey, row.nangoConnectionId);
+      await this.nango().deleteConnection(this.providerKey, row.connectionId);
     } catch {
       // ponytail: best-effort — the local row is still removed so the UI flips to
       // disconnected even if Nango's connection is already gone.
@@ -134,7 +134,7 @@ export class NangoConnectionProvider implements ConnectionProvider {
 
   private async findConnectionId(userId: string): Promise<string | null> {
     const row = await this.store.findFirst({ where: { userId, provider: this.providerKey } });
-    return row?.nangoConnectionId ?? null;
+    return row?.connectionId ?? null;
   }
 
   // ponytail: one row per (userId, provider) via find-then-write. A concurrent
@@ -142,8 +142,8 @@ export class NangoConnectionProvider implements ConnectionProvider {
   // provider]) + a real upsert if that ever happens.
   private async upsertConnection(userId: string, nangoConnectionId: string, status: string): Promise<void> {
     const existing = await this.store.findFirst({ where: { userId, provider: this.providerKey } });
-    if (existing) await this.store.update({ where: { id: existing.id }, data: { nangoConnectionId, status } });
-    else await this.store.create({ data: { userId, provider: this.providerKey, nangoConnectionId, status } });
+    if (existing) await this.store.update({ where: { id: existing.id }, data: { connectionId: nangoConnectionId, status } });
+    else await this.store.create({ data: { userId, provider: this.providerKey, connectionId: nangoConnectionId, status } });
   }
 
   private nangoErrorKind(e: unknown): ConnectionErrorKind | null {

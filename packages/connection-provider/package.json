@@ -13,6 +13,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@composio/core": "^0.14.1",
     "@nangohq/node": "^0.71.3"
   },
   "devDependencies": {

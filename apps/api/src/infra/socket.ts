@@ -37,6 +37,11 @@ export function initSocket(server: HttpServer): void {
     if (!ids) socketsByUser.set(userId, (ids = new Set()));
     ids.add(socket.id);
     getLogger().info({ userId, socketId: socket.id, open: ids.size }, "socket connected");
+    // 2.2.2 — manual ping/pong test event (distinct from socket.io's wire-level ping).
+    socket.on("ping", (cb) => {
+      if (typeof cb === "function") cb({ event: "pong", at: new Date().toISOString() });
+      else socket.emit("pong", { at: new Date().toISOString() });
+    });
     socket.on("disconnect", () => {
       ids.delete(socket.id);
       // Guard against a stale closure deleting a newer live set (edge: socket A

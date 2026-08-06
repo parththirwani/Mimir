@@ -9,6 +9,7 @@ import { authRouter } from "./auth/auth.js";
 import { integrationsRouter } from "./routes/integrations.js";
 import { messageRouter } from "./routes/message.js";
 import { mcpRouter } from "./routes/mcp.js";
+import { webhooksRouter } from "./routes/webhooks.js";
 import { redis } from "./infra/redis.js";
 import { initPubSub, initSocket } from "./infra/socket.js";
 
@@ -39,6 +40,17 @@ app.use((req, res, next) => {
   runWithContext({ requestId }, () => context.with(trace.setSpan(context.active(), span), next));
 });
 
+// Webhook HMACs (GitHub/Slack) need the pre-parsed raw body. Capture it on the
+// webhook path BEFORE the global JSON parser (both listen on the same stream);
+// express.json() still populates req.body for the handlers.
+app.use("/webhooks", (req, res, next) => {
+  const chunks: Buffer[] = [];
+  req.on("data", (c) => chunks.push(c));
+  req.on("end", () => {
+    (req as { rawBody?: string }).rawBody = Buffer.concat(chunks).toString("utf8");
+    next();
+  });
+});
 app.use(express.json());
 
 // CORS for the static-export web app (different origin/port). Reflect only
@@ -64,6 +76,7 @@ app.use("/api/v1/auth", authRouter);
 app.use("/api/v1", integrationsRouter);
 app.use("/api/v1", messageRouter);
 app.use("/api/v1", mcpRouter);
+app.use("/webhooks", webhooksRouter());
 
 app.get("/health", async (_req, res) => {
   let db = "ok";

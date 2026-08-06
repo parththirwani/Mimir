@@ -224,10 +224,20 @@ export default function ChatPage() {
     setError(null);
     const res = await fetch(`${API}/integrations/gmail/connect`, { credentials: "include" });
     if (!res.ok) {
-      setError("Couldn't start Gmail connect — try again");
+      const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
+      setError(body?.error?.message ?? "Couldn't start Gmail connect — try again");
       return;
     }
-    const { sessionToken } = (await res.json()) as { sessionToken: string };
+    const { sessionToken, authorizationUrl } = (await res.json()) as { sessionToken?: string; authorizationUrl?: string };
+    // Composio hands back a redirect URL; Nango a session token for its in-page widget.
+    if (authorizationUrl) {
+      window.location.href = authorizationUrl;
+      return;
+    }
+    if (!sessionToken) {
+      setError("Couldn't start Gmail connect — retry later");
+      return;
+    }
     const { default: Nango } = await import("@nangohq/frontend");
     new Nango({ connectSessionToken: sessionToken }).openConnectUI({
       onEvent: (event) => {
@@ -246,6 +256,17 @@ export default function ChatPage() {
         }
       },
     });
+  }, [refreshGmailStatus]);
+
+  const disconnectGmail = useCallback(async () => {
+    setError(null);
+    const res = await fetch(`${API}/integrations/gmail/disconnect`, { method: "POST", credentials: "include" });
+    if (!res.ok) {
+      setError("Couldn't disconnect Gmail — try again");
+      return;
+    }
+    setGmailConnected(false);
+    void refreshGmailStatus();
   }, [refreshGmailStatus]);
 
   const logout = useCallback(async () => {
@@ -279,6 +300,7 @@ export default function ChatPage() {
         onClose={() => setConnectorsOpen(false)}
         items={connectors}
         onConnect={connectGmail}
+        onDisconnect={disconnectGmail}
         onLogout={logout}
       />
 

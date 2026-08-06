@@ -1,5 +1,5 @@
 import { getConfig, getPrismaClient } from "@mimir/backend-core";
-import { ConnectionError, NangoConnectionProvider, ProviderError } from "@mimir/connection-provider";
+import { ConnectionError, ProviderError, gmailProvider } from "@mimir/connection-provider";
 
 const prisma = getPrismaClient();
 const GMAIL_API = "https://gmail.googleapis.com";
@@ -30,11 +30,7 @@ export async function fetchEntityData(userId: string, entity: string | null, tas
     return { provider: entity ?? "", items: [] };
   }
   const cfg = getConfig();
-  const provider = new NangoConnectionProvider({
-    secretKey: cfg.NANGO_SECRET_KEY,
-    host: cfg.NANGO_BASE_URL,
-    store: prisma.integrationConnection,
-  });
+  const provider = gmailProvider(cfg, prisma.integrationConnection, `${cfg.PUBLIC_API_URL ?? cfg.WEB_APP_URL ?? ""}/api/v1/integrations/gmail/callback`);
   const token = await provider.getAccessToken(userId);
   return { provider: "gmail", messages: await fetchGmailMessages(token) };
 }
@@ -62,6 +58,24 @@ export async function fetchGmailMessages(token: string): Promise<GmailMessage[]>
     });
   }
   return messages;
+}
+
+export interface GmailWatchResult {
+  expiration: number;
+  historyId: string;
+}
+
+// 6.2.1 — Gmail push watch registration. Requires a Pub/Sub topic (Google Cloud)
+// reachable by the Gmail account; the user's OAuth token authorizes the watch
+// against the shared topic. Gmail expiring the watch (~7 days) is handled by the
+// renewal sweep (6.2.2).
+export async function registerGmailWatch(token: string, topicName: string): Promise<GmailWatchResult> {
+  const watch = await gmailFetch<{ expiration?: number; historyId?: string }>(token, "/gmail/v1/users/me/watch", {
+    method: "POST",
+    body: { topicName, labelIds: ["INBOX"], labelFilterBehavior: "INCLUDE" },
+  });
+  if (!watch.historyId) throw new ProviderError("malformed_response", "gmail watch missing historyId");
+  return { expiration: watch.expiration ?? 0, historyId: watch.historyId };
 }
 
 export interface GmailDraftMessage {

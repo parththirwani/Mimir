@@ -1,5 +1,6 @@
 import { getLogger, getPrismaClient } from "@mimir/backend-core";
 import { agentJobs, emailJobs, retryPolicy } from "./queues.js";
+import { pollLoop } from "./poll-loop.js";
 
 const prisma = getPrismaClient();
 
@@ -56,18 +57,5 @@ export async function drainOutbox(
 
 // The relay loop: every few seconds, drain unprocessed rows. Returns a stop handle.
 export function startOutboxRelay(intervalMs = 3000): () => void {
-  let running = true;
-  void (async () => {
-    while (running) {
-      try {
-        await drainOutbox();
-      } catch (e) {
-        getLogger().error({ err: e }, "outbox relay tick failed");
-      }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-  })();
-  return () => {
-    running = false;
-  };
+  return pollLoop(() => drainOutbox(), "outbox", intervalMs);
 }

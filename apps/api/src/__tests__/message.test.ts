@@ -14,6 +14,12 @@ describe("mapLLMError", () => {
     expect(mapLLMError({ httpStatus: 502 })).toMatchObject({ status: 502, code: "UPSTREAM_ERROR" });
   });
 
+  test("retriable (timeout/5xx) -> 504 UPSTREAM_TIMEOUT", () => {
+    // timeout surfaces as httpStatus 0 with retriable true
+    expect(mapLLMError({ httpStatus: 0, retriable: true })).toMatchObject({ status: 504, code: "UPSTREAM_TIMEOUT" });
+    expect(mapLLMError({ httpStatus: 503, retriable: true })).toMatchObject({ status: 504, code: "UPSTREAM_TIMEOUT" });
+  });
+
   test("unknown -> 500 INTERNAL_ERROR", () => {
     expect(mapLLMError(new Error("x"))).toMatchObject({ status: 500, code: "INTERNAL_ERROR" });
   });

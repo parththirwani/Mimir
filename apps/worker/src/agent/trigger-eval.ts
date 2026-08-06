@@ -79,7 +79,7 @@ export async function validateTriggerFire(triggerId: string, data: unknown, deps
   await prisma.agentEvent.create({
     data: {
       agentId: trigger.agentId,
-      eventType: "trigger_mismatch",
+      eventType: "trigger_skipped",
       payload: { triggerId, criteria: trigger.criteria, rationale: verdict.rationale },
     },
   });

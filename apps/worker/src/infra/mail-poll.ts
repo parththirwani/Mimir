@@ -2,7 +2,7 @@ import { getLogger, getPrismaClient, MAIL_NOISE_TTL_SECONDS } from "@mimir/backe
 import { GMAIL_INTEGRATION } from "@mimir/connection-provider";
 import type { Redis } from "ioredis";
 import { fetchEntityData, type GmailMessage } from "../integrations/gmail/gmail.js";
-import { filterVerdict } from "../agent/agent-execution.js";
+import { triageVerdict, type TriageVerdict } from "../agent/triage.js";
 import { publishUserEvent, redis } from "./redis.js";
 
 const prisma = getPrismaClient();
@@ -63,7 +63,10 @@ async function ownerConversation(userId: string): Promise<string> {
 export interface MailPollDeps {
   cache?: Redis;
   fetch?: typeof fetchEntityData;
-  filter?: typeof filterVerdict;
+  // The triage judge (6.5.5). Tests inject a deterministic one; the production
+  // default is triageVerdict. Compatibility: tests may pass an extra `kind` arg,
+  // so type it loosely enough to accept either.
+  filter?: (userId: string, content: string, kind?: string) => Promise<TriageVerdict>;
   publish?: typeof publishUserEvent;
   // Re-judge window for noise verdicts. Injectable for tests; defaults to the
   // production constant (24h).
@@ -76,7 +79,10 @@ export interface MailPollDeps {
 export async function pollImportantMail(deps: MailPollDeps = {}): Promise<number> {
   const cache = deps.cache ?? redis;
   const fetchData = deps.fetch ?? fetchEntityData;
-  const judge = deps.filter ?? filterVerdict;
+  // 6.5.5 — triage classifier (stricter, default-to-false) is the judge for this
+  // unwatched-inbox surfacing, distinct from 4.7's filter (which gates watched
+  // agents). Injectable so tests can hand in a deterministic judge.
+  const judge = deps.filter ?? triageVerdict;
   const publish = deps.publish ?? publishUserEvent;
   const noiseTtlSeconds = deps.noiseTtlSeconds ?? MAIL_NOISE_TTL_SECONDS;
 

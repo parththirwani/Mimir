@@ -6,7 +6,7 @@ import {
   loadPrompt,
   trackModelCall,
 } from "@mimir/backend-core";
-import { GMAIL_INTEGRATION, NangoConnectionProvider } from "@mimir/connection-provider";
+import { GMAIL_INTEGRATION, gmailProvider as gmailProviderOf } from "@mimir/connection-provider";
 import type { LlmMessage } from "@mimir/shared-types";
 import { createGmailDraft, deleteGmailDraft, getGmailProfile } from "../../../worker/src/integrations/gmail/gmail.js";
 
@@ -190,13 +190,9 @@ export function parseResolveIntent(raw: string, fallbackDraft: { to: string; sub
   }
 }
 
-export function gmailProvider(): NangoConnectionProvider {
+export function gmailProvider(): ReturnType<typeof gmailProviderOf> {
   const cfg = getConfig();
-  return new NangoConnectionProvider({
-    secretKey: cfg.NANGO_SECRET_KEY,
-    host: cfg.NANGO_BASE_URL,
-    store: prisma.integrationConnection,
-  });
+  return gmailProviderOf(cfg, prisma.integrationConnection, `${cfg.PUBLIC_API_URL ?? cfg.WEB_APP_URL ?? ""}/api/v1/integrations/gmail/callback`);
 }
 
 export async function createEmailDraft(userId: string, draft: { to: string; subject: string; body: string }): Promise<{ draftId: string; messageId: string }> {

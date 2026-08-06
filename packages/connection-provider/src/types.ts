@@ -4,8 +4,13 @@
 
 export interface ConnectionProvider {
   initiateOAuth(userId: string): Promise<{ sessionToken: string; authorizationUrl: string }>;
-  handleCallback(userId: string): Promise<void>;
+  // connectionId is provider-optional: Composio's OAuth callback carries the
+  // connected_account id; Nango resolves by user tag and ignores it.
+  handleCallback(userId: string, connectionId?: string): Promise<void>;
   getConnection(userId: string): Promise<{ status: string } | null>;
+  // Heal a missing local row from the upstream provider (Composio by user's
+  // gmail account; Nango by tag). Returns whether a row now exists.
+  syncConnection(userId: string, connectionId?: string): Promise<boolean>;
   getAccessToken(userId: string): Promise<string>;
   revoke(userId: string): Promise<void>;
 }
@@ -49,10 +54,10 @@ export class NotConfiguredError extends Error {
 export interface IntegrationConnectionStore {
   findFirst(args: {
     where: { userId: string; provider: string };
-  }): Promise<{ id: string; nangoConnectionId: string; status: string } | null>;
+  }): Promise<{ id: string; connectionId: string; status: string } | null>;
   create(args: {
-    data: { userId: string; provider: string; nangoConnectionId: string; status: string };
+    data: { userId: string; provider: string; connectionId: string; status: string };
   }): Promise<unknown>;
-  update(args: { where: { id: string }; data: { nangoConnectionId: string; status: string } }): Promise<unknown>;
+  update(args: { where: { id: string }; data: { connectionId: string; status: string } }): Promise<unknown>;
   delete(args: { where: { id: string } }): Promise<unknown>;
 }

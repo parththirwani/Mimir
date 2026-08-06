@@ -20,6 +20,7 @@ import { fetchEntityData } from "../integrations/gmail/gmail.js";
 import { publishUserEvent } from "../infra/redis.js";
 import { validateTriggerFire } from "./trigger-eval.js";
 import { agentTasksFor } from "./tasks-registry.js";
+import { parseSurfaceVerdict } from "./triage.js";
 
 const prisma = getPrismaClient();
 
@@ -169,6 +170,20 @@ export type AgentToolOutcome =
   | { outcome: "wait" }
   | { outcome: "draft"; messageId: string };
 
+// Cross-path surface dedup: webhook and poll can both wake the same agent to
+// re-fetch a mailbox that produced the same output. If the agent already
+// surfaced this exact content, a repeat is not surfaced again.
+export async function isDuplicateSurface(agentId: string, content: string): Promise<boolean> {
+  const last = await prisma.agentEvent.findFirst({
+    where: { agentId, eventType: "surfaced" },
+    orderBy: { createdAt: "desc" },
+    select: { payload: true },
+  });
+  if (!last) return false;
+  const prev = (last.payload as { content?: unknown }).content;
+  return typeof prev === "string" && prev === content;
+}
+
 function parseToolArgs(toolCall: ToolCall): Record<string, unknown> {
   try {
     return JSON.parse(toolCall.function?.arguments ?? "{}") as Record<string, unknown>;
@@ -278,17 +293,12 @@ export async function filterVerdict(userId: string, content: string, kind: Filte
     return { surface: false, rationale: "filter unavailable", category: "noise", error: true };
   }
   await trackModelCall({ userId, useCase: "agent_filter", result });
-  try {
-    const cleaned = result.content.replace(/```json|```/g, "").trim();
-    const json = JSON.parse(cleaned) as { surface?: unknown; rationale?: unknown; category?: unknown };
-    const surface = json.surface === true;
-    const rationale = typeof json.rationale === "string" ? json.rationale : "";
-    const category = json.category === "actionable" || json.category === "fyi" ? json.category : "noise";
-    return { surface, rationale, category };
-  } catch {
+  const parsed = parseSurfaceVerdict(result.content);
+  if (!parsed.ok) {
     getLogger().warn("filter output unparseable; discarding result");
     return { surface: false, rationale: "unparseable filter output", category: "noise", error: true };
   }
+  return { surface: parsed.surface, rationale: parsed.rationale, category: parsed.category, error: false };
 }
 
 // The agent-jobs processor. Postgres writes (AgentEvent + Message) complete
@@ -328,6 +338,19 @@ export async function executeAgent(job: Job): Promise<void> {
       data: { status: "expired" },
     });
     const content = "Connect Gmail to let me watch your email.";
+    // Once we've nudged to connect, stop re-surfacing the same ask on every run
+    // (the watch keeps firing while disconnected). Only re-nudge once the user
+    // resolves it — otherwise the thread fills with duplicate Connect Gmail
+    // messages for a single unavailable connection.
+    const lastAssistant = await prisma.message.findFirst({
+      where: { conversationId: agent.ownerConversationId, role: "assistant", status: "complete" },
+      orderBy: { createdAt: "desc" },
+    });
+    const lastTool = lastAssistant?.toolCalls as { type?: string; status?: string } | null;
+    if (lastTool?.type === "gmail.connect" && lastTool.status === "pending") {
+      await safeFold(agentId);
+      return;
+    }
     await prisma.agentEvent.create({
       data: {
         agentId,
@@ -356,7 +379,7 @@ export async function executeAgent(job: Job): Promise<void> {
   // Fire-time validation (4.11.6): the cheap model that classified the trigger
   // can misfire, so the owning agent re-checks the fired trigger's criteria
   // against the freshly-fetched data before acting. A mismatch is logged as
-  // AgentEvent{trigger_mismatch} and the run ends quietly — never surfaced.
+  // AgentEvent{trigger_skipped} and the run ends quietly — never surfaced.
   if (trigger === "trigger_fired" && triggerId) {
     const stillMatches = await validateTriggerFire(triggerId, data);
     if (!stillMatches) {
@@ -432,28 +455,38 @@ export async function executeAgent(job: Job): Promise<void> {
   await prisma.agent.update({ where: { id: agentId }, data: { lastActiveAt: new Date() } });
 
   // The discard path is never skipped — write surfaced OR discarded.
+  // Direct user requests always surface; background/triggered runs pass the
+  // async filter (4.7).
   const verdict = userTriggered(trigger)
     ? { surface: true, rationale: "user-triggered", category: "actionable" as const }
     : await filterVerdict(agent.userId, result.content);
-  const eventType = verdict.surface ? "surfaced" : "discarded";
+  // Cross-path dedup (6.x): webhook push AND adaptive poll can both wake the same
+  // agent to re-fetch the same mailbox and both decide to surface the SAME
+  // output. A duplicate is downgraded to `discarded` so the user isn't shown the
+  // same message twice.
+  const duplicate = verdict.surface && (await isDuplicateSurface(agentId, result.content));
+  const verdict2 = duplicate
+    ? { surface: false, rationale: "duplicate of an already-surfaced result", category: "noise" as const, error: false }
+    : verdict;
+  const eventType = verdict2.surface ? "surfaced" : "discarded";
   await prisma.agentEvent.create({
     data: {
       agentId,
       eventType,
       payload: {
         content: result.content,
-        rationale: verdict.rationale,
-        category: verdict.category,
+        rationale: verdict2.rationale,
+        category: verdict2.category,
         model: result.actualModel ?? result.model,
         tokens: result.usage.totalTokens,
       },
     },
   });
-  getLogger().info({ agentId, eventType, category: verdict.category }, "agent result filtered");
+  getLogger().info({ agentId, eventType, category: verdict2.category }, "agent result filtered");
 
   // Only surfaced events proceed to the write+publish path.
-  if (!verdict.surface) {
-    await trackEvent(agent.userId, "agent_event_discarded", { agentId, category: verdict.category });
+  if (!verdict2.surface) {
+    await trackEvent(agent.userId, "agent_event_discarded", { agentId, category: verdict2.category });
     await safeFold(agentId);
     return;
   }

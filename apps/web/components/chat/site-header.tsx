@@ -22,6 +22,12 @@ export function SiteHeader({
         </Link>
         {watching ? (
           <div className="flex items-center gap-3">
+            <Link
+              href="/settings"
+              className="rounded-md px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none"
+            >
+              Settings
+            </Link>
             {onOpenConnectors ? (
               <button
                 type="button"

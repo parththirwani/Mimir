@@ -93,14 +93,14 @@ describe("validateTriggerFire (4.11.6 fire-time re-check)", () => {
     expect(ok).toBe(true);
   });
 
-  test("mismatch is logged as trigger_mismatch and never counted as fired", async () => {
+  test("mismatch is logged as trigger_skipped and never counted as fired", async () => {
     const ok = await validateTriggerFire(triggerId, { messages: [] }, {
       evaluate: async () => ({ matches: false, rationale: "criteria no longer holds" }),
     });
     expect(ok).toBe(false);
 
     const ev = await prisma.agentEvent.findFirst({
-      where: { agentId, eventType: "trigger_mismatch" },
+      where: { agentId, eventType: "trigger_skipped" },
       orderBy: { createdAt: "desc" },
     });
     expect(ev).toBeDefined();

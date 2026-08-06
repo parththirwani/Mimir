@@ -1,10 +1,13 @@
-import { getConfig, getLogger, MAIL_POLL_CRON } from "@mimir/backend-core";
+import { getConfig, getLogger, MAIL_POLL_CRON, runWithContext } from "@mimir/backend-core";
 import { Queue, Worker, type Job, type JobsOptions } from "bullmq";
 import { executeAgent } from "../agent/agent-execution.js";
 import { runDormancySweep } from "../agent/dormancy.js";
 import { sendEmailJob } from "../email/email-send-job.js";
 import { pollImportantMail } from "./mail-poll.js";
+import { runAdaptivePolling, ADAPTIVE_POLL_CRON, RECONCILE_CRON } from "./event-polling.js";
 import { runTriggerSweep, TRIGGER_TICK_CRON } from "../agent/triggers.js";
+import { runWatchRenewal } from "../integrations/gmail/watch-renewal.js";
+import { runConnectionCanary } from "../integrations/connection-canary.js";
 
 // ponytail: queue name constants live in worker until a producer needs them
 // elsewhere; move to @mimir/backend-core then.
@@ -66,6 +69,44 @@ export async function scheduleTriggerTick(): Promise<void> {
   );
 }
 
+// 1-min adaptive per-connection polling tick (6.4.1).
+export async function scheduleAdaptivePolling(): Promise<void> {
+  await agentTriggers.upsertJobScheduler(
+    "adaptive-polling",
+    { pattern: ADAPTIVE_POLL_CRON, immediately: false },
+    { name: "adaptive-polling", data: { poll: true } },
+  );
+}
+
+// 30-min reconciliation backstop (6.3): forces a poll of every connection even
+// if its own interval isn't due (safety net for missed webhook deliveries).
+export async function scheduleReconciliation(): Promise<void> {
+  await agentTriggers.upsertJobScheduler(
+    "reconciliation",
+    { pattern: RECONCILE_CRON, immediately: false },
+    { name: "reconciliation", data: { reconcile: true } },
+  );
+}
+
+// Daily gmail watch renewal sweep (6.2.2) — re-registers watches nearing expiry.
+export async function scheduleWatchRenewal(): Promise<void> {
+  await agentTriggers.upsertJobScheduler(
+    "watch-renewal",
+    { pattern: "0 2 * * *", immediately: false },
+    { name: "watch-renewal", data: { renew: true } },
+  );
+}
+
+// Daily connection canary — exercises gmail getAccessToken so a silent break in
+// the provider's token extraction is caught by a job, not a user.
+export async function scheduleConnectionCanary(): Promise<void> {
+  await agentTriggers.upsertJobScheduler(
+    "connection-canary",
+    { pattern: "0 4 * * *", immediately: false },
+    { name: "connection-canary", data: { canary: true } },
+  );
+}
+
 // agent-triggers processor: dormancy + mail-poll sweeps are the only real jobs.
 // Exported so tests can exercise it on a throwaway queue (the real
 // agent-triggers queue may be consumed by a live dev worker during tests).
@@ -79,6 +120,18 @@ export async function agentTriggerProcessor(job: Job): Promise<void> {
       return;
     case "trigger-tick":
       await runTriggerSweep();
+      return;
+    case "adaptive-polling":
+      await runAdaptivePolling();
+      return;
+    case "reconciliation":
+      await runAdaptivePolling({ force: true });
+      return;
+    case "watch-renewal":
+      await runWatchRenewal();
+      return;
+    case "connection-canary":
+      await runConnectionCanary();
       return;
     default:
       return noop(job);
@@ -111,7 +164,15 @@ export function startWorkers(): Worker[] {
 
   const workers: Worker[] = [];
   for (const [queue, processor, workerOpts] of registrations) {
-    const worker = new Worker(queue.name, processor, { connection, ...workerOpts });
+    // 1.2.1 — thread jobId through every log line in the job's lifecycle (the
+    // api does the same for requestId). ALS carries it down the async chain.
+    const withContext: (job: Job) => Promise<unknown> = (job) =>
+      new Promise((resolve, reject) => {
+        runWithContext({ jobId: String(job.id), queue: queue.name }, () => {
+          processor(job).then(resolve, reject);
+        });
+      });
+    const worker = new Worker(queue.name, withContext, { connection, ...workerOpts });
     wireDlq(worker);
     workers.push(worker);
   }

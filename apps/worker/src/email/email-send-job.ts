@@ -5,7 +5,7 @@ import {
   getPrismaClient,
   trackEvent,
 } from "@mimir/backend-core";
-import { ConnectionError, GMAIL_INTEGRATION, NangoConnectionProvider } from "@mimir/connection-provider";
+import { ConnectionError, GMAIL_INTEGRATION, gmailProvider as gmailProviderOf } from "@mimir/connection-provider";
 import type { Job } from "bullmq";
 import { sendGmailDraft } from "../integrations/gmail/gmail.js";
 import { publishUserEvent } from "../infra/redis.js";
@@ -16,13 +16,9 @@ import { publishUserEvent } from "../infra/redis.js";
 // worker->api import) — it re-implements the few prisma helpers it needs.
 const prisma = getPrismaClient();
 
-function gmailProvider(): NangoConnectionProvider {
+function gmailProvider(): ReturnType<typeof gmailProviderOf> {
   const cfg = getConfig();
-  return new NangoConnectionProvider({
-    secretKey: cfg.NANGO_SECRET_KEY,
-    host: cfg.NANGO_BASE_URL,
-    store: prisma.integrationConnection,
-  });
+  return gmailProviderOf(cfg, prisma.integrationConnection, `${cfg.PUBLIC_API_URL ?? cfg.WEB_APP_URL ?? ""}/api/v1/integrations/gmail/callback`);
 }
 
 async function markGmailExpired(userId: string): Promise<void> {
