@@ -13,6 +13,7 @@ import { ConnectorsPanel } from "@/components/chat/connectors-panel";
 import { GmailIcon } from "@/components/landing/brand-icons";
 import type { ThreadMessage } from "@/lib/thread";
 import { cn } from "@/lib/utils";
+import { maybeNotifyDesktop } from "@/lib/push";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api/v1";
 const WS_URL = API.replace(/^http/, "ws").replace(/\/api\/v1$/, "");
@@ -135,6 +136,7 @@ export default function ChatPage() {
     let refreshing = false;
     socket.on("connect", () => console.log("[socket] connected", socket.id));
     socket.on("new_message", () => {
+      void maybeNotifyDesktop("Mimir", "New activity in your thread");
       fetch(`${API}/conversation`, { credentials: "include" })
         .then((res) => (res.ok ? (res.json() as Promise<Conversation>) : null))
         .then((data) => {

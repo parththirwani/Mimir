@@ -30,6 +30,9 @@ out/
 build
 dist
 
+# Rust/Tauri build artifacts (multi-GB)
+apps/desktop/src-tauri/target/
+
 
 # Debug
 npm-debug.log*

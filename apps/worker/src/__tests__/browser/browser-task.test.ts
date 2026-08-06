@@ -30,6 +30,20 @@ describe("assertAllowedUrl (5.6 domain allowlist)", () => {
   });
 });
 
+describe("assertAllowedUrl (5.6.4 domain denylist)", () => {
+  test("blocks an exact denylisted host even when allowlisted", () => {
+    expect(() => assertAllowedUrl("https://google.com", ALLOW, ["google.com"])).toThrow(/denied/);
+  });
+
+  test("blocks subdomains of a denylisted domain", () => {
+    expect(() => assertAllowedUrl("https://accounts.example.com/login", ALLOW, ["example.com"])).toThrow(/denied/);
+  });
+
+  test("allows a host not on the denylist (subdomain-prefix false positive)", () => {
+    expect(assertAllowedUrl("https://google.com/login", ALLOW, ["example.com"]).hostname).toBe("google.com");
+  });
+});
+
 describe("browserFetchTask", () => {
   const fakeRuntime = {
     open: async () => ({

@@ -103,9 +103,15 @@ export function webhooksRouter(opts: {
       res.status(401).json({ error: { code: "UNAUTHORIZED", message: "invalid Google Push token" } });
       return;
     }
-    const message = (req.body as { message?: { data?: string } })?.message;
+    const message = (req.body as { message?: { data?: string; publishTime?: string } })?.message;
     if (!message?.data) {
       res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "missing message.data" } });
+      return;
+    }
+    // Replay protection (6.1.3): Pub/Sub PushMessage carries `publishTime`; reject
+    // a push that Google published more than 5 minutes ago.
+    if (isStale(Date.parse(message.publishTime ?? ""))) {
+      res.status(401).json({ error: { code: "UNAUTHORIZED", message: "stale Google Push message" } });
       return;
     }
     // Pub/Sub PushMessage data is base64; for Gmail push it's a JSON string with

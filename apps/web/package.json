@@ -13,6 +13,7 @@
     "@mimir/shared-types": "workspace:*",
     "@mimir/ui": "workspace:*",
     "@nangohq/frontend": "^0.71.3",
+    "@tauri-apps/plugin-notification": "^2.3.3",
     "clsx": "^2.1.1",
     "lucide-react": "^0.575.0",
     "motion": "^12.43.0",

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { SiteHeader } from "@/components/chat/site-header";
+import { disablePush, enablePush, inDesktopShell, pushEnabled } from "@/lib/push";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000/api/v1";
 
@@ -25,6 +26,8 @@ export default function SettingsPage() {
   const [mcpName, setMcpName] = useState("");
   const [mcpUrl, setMcpUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [notifications, setNotifications] = useState<boolean | null>(null);
+  const [pushBusy, setPushBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     const [a, b] = await Promise.all([
@@ -37,7 +40,27 @@ export default function SettingsPage() {
 
   useEffect(() => {
     void refresh();
+    void pushEnabled().then(setNotifications);
   }, [refresh]);
+
+  const togglePush = async () => {
+    setPushBusy(true);
+    setError(null);
+    try {
+      if (notifications) {
+        await disablePush();
+        setNotifications(false);
+      } else {
+        const ok = await enablePush();
+        setNotifications(ok);
+        if (!ok) setError("Notifications require granting permission in the browser.");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't update notifications.");
+    } finally {
+      setPushBusy(false);
+    }
+  };
 
   const connect = async (key: string) => {
     setError(null);
@@ -122,6 +145,29 @@ export default function SettingsPage() {
       <SiteHeader />
       <main className="mx-auto w-full max-w-3xl space-y-10 px-5 py-8">
         <h1 className="font-condensed text-2xl font-semibold">Settings</h1>
+
+        <section>
+          <h2 className="mb-3 text-sm font-medium text-muted-foreground">Notifications</h2>
+          <div className="flex items-center justify-between rounded-lg border border-border px-4 py-3">
+            <div>
+              <div className="text-sm">{inDesktopShell() ? "Desktop notifications" : "Browser push"}</div>
+              <div className="text-xs text-muted-foreground">
+                {inDesktopShell()
+                  ? "OS notification when the app window isn't focused."
+                  : "Wake-ups when the app is closed or on another tab."}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => void togglePush()}
+              disabled={pushBusy}
+              className="cursor-pointer rounded-md border border-border px-3 py-1 text-xs text-foreground transition-colors hover:border-border-strong disabled:opacity-50"
+            >
+              {pushBusy ? "…" : notifications ? "Disable" : "Enable"}
+            </button>
+          </div>
+          {error ? <p className="mt-2 text-xs text-red-400">{error}</p> : null}
+        </section>
 
         <section>
           <h2 className="mb-3 text-sm font-medium text-muted-foreground">Connections</h2>

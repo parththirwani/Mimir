@@ -90,6 +90,32 @@ describe("outbox relay", () => {
     expect(after?.processedAt).not.toBeNull();
   });
 
+  test("an enqueue failure mid-spawn leaves the row unprocessed; a later relay recovers it", async () => {
+    // 4.4.4 "kill Redis mid-spawn": the OutboxEvent row is durable in Postgres,
+    // but the BullMQ enqueue (Redis) fails. The row must survive unprocessed and
+    // be drained once Redis is healthy — nothing is lost.
+    const row = await prisma.outboxEvent.create({
+      data: { eventType: "spawn_agent", payload: { agentId, trigger: "user_message" } },
+    });
+
+    const broken = { add: async () => { throw new Error("redis down (simulated)"); } } as unknown as Parameters<typeof drainOutbox>[0];
+    const enqueuedDown = await drainOutbox(broken);
+
+    expect(enqueuedDown).toBe(0);
+    expect((await prisma.outboxEvent.findUnique({ where: { id: row.id } }))?.processedAt).toBeNull();
+
+    const enqueued = await drainOutbox(agentJobs);
+
+    expect(enqueued).toBe(1);
+    enqueuedJobIds.push(`outbox-${row.id}`);
+    await poll(
+      () => prisma.outboxEvent.findUnique({ where: { id: row.id } }),
+      (r) => r?.processedAt != null,
+    );
+    const job = await agentJobs.getJob(`outbox-${row.id}`);
+    expect(job?.data).toMatchObject({ agentId, trigger: "user_message" });
+  });
+
   test("an email_send row is routed to email-jobs and marked processed", async () => {
     const payload = {
       userId,

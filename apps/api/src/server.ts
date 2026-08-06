@@ -9,6 +9,7 @@ import { authRouter } from "./auth/auth.js";
 import { integrationsRouter } from "./routes/integrations.js";
 import { messageRouter } from "./routes/message.js";
 import { mcpRouter } from "./routes/mcp.js";
+import { pushRouter } from "./routes/push.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { redis } from "./infra/redis.js";
 import { initPubSub, initSocket } from "./infra/socket.js";
@@ -76,6 +77,7 @@ app.use("/api/v1/auth", authRouter);
 app.use("/api/v1", integrationsRouter);
 app.use("/api/v1", messageRouter);
 app.use("/api/v1", mcpRouter);
+app.use("/api/v1", pushRouter);
 app.use("/webhooks", webhooksRouter());
 
 app.get("/health", async (_req, res) => {

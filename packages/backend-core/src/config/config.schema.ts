@@ -23,6 +23,7 @@ export const configSchema = z.object({
   BROWSERBASE_PROJECT_ID: z.string().min(1).optional(),
   // Empty (or unset) = allow all; set to a comma-separated list to restrict.
   BROWSER_ALLOWED_DOMAINS: z.string().optional(),
+  BROWSER_DENIED_DOMAINS: z.string().optional(),
   SENTRY_DSN: z.string().min(1).optional(),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().min(1).optional(),
   OTEL_EXPORTER_OTLP_HEADERS: z.string().min(1).optional(),
@@ -43,6 +44,11 @@ export const configSchema = z.object({
   // exercised daily to detect a silent break in the provider's token
   // extraction (Composio's shape is reached-into). Skipped when unset.
   CONNECTION_CANARY_USER_ID: z.string().min(1).optional(),
+  // Web Push (7.1): VAPID keys. Absent => push delivery is disabled and events
+  // only reach users with a live socket (message stays in the thread otherwise).
+  VAPID_PUBLIC_KEY: z.string().min(1).optional(),
+  VAPID_PRIVATE_KEY: z.string().min(1).optional(),
+  VAPID_SUBJECT: z.string().min(1).optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

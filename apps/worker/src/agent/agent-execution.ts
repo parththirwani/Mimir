@@ -14,7 +14,7 @@ import {
 import type { LlmTool, ToolCall } from "@mimir/backend-core";
 import type { LlmMessage } from "@mimir/shared-types";
 import { toLlmTool } from "@mimir/tasks";
-import { ConnectionError, GMAIL_INTEGRATION } from "@mimir/connection-provider";
+import { ConnectionError, GMAIL_INTEGRATION, ProviderError, ProviderErrorKind } from "@mimir/connection-provider";
 import type { Job } from "bullmq";
 import { fetchEntityData } from "../integrations/gmail/gmail.js";
 import { publishUserEvent } from "../infra/redis.js";
@@ -301,6 +301,24 @@ export async function filterVerdict(userId: string, content: string, kind: Filte
   return { surface: parsed.surface, rationale: parsed.rationale, category: parsed.category, error: false };
 }
 
+// 5.4.1 per-kind retry policy. BullMQ has a single fixed attempt count per job,
+// so express per-kind caps here instead. `null` = not a known provider error
+// (LLM/unknown) → keep BullMQ's default retries. `0` = non-retryable, surface
+// immediately with no retries.
+//
+// Cap convention: total runs (attemptsMade is 1 on the first run). A cap N means
+// retries when attemptsMade < N, then surface at N → N-1 retries.
+const RETRY_CAPS: Record<ProviderErrorKind, number> = {
+  rate_limited: 4, // "retry up to 3x" → 3 retries (4 total runs)
+  provider_down: 2, // "retry once then surface" → 1 retry
+  malformed_response: 2, // → 1 retry then surface
+  validation_failed: 0,
+};
+
+function classifyProviderError(e: unknown): ProviderErrorKind | null {
+  return e instanceof ProviderError ? e.kind : null;
+}
+
 // The agent-jobs processor. Postgres writes (AgentEvent + Message) complete
 // BEFORE any publish — no publish-before-write.
 export async function executeAgent(job: Job): Promise<void> {
@@ -327,8 +345,8 @@ export async function executeAgent(job: Job): Promise<void> {
   try {
     data = await fetchEntityData(agent.userId, agent.entity, agent.taskDescription);
   } catch (e) {
-    if (!(e instanceof ConnectionError)) throw e;
-    getLogger().warn({ agentId, err: e }, "integration not usable; surfacing reconnect");
+    if (e instanceof ConnectionError) {
+      getLogger().warn({ agentId, err: e }, "integration not usable; surfacing reconnect");
     // ponytail: per-kind retry counts ("retry 3x / retry once then surface")
     // aren't expressible in BullMQ's fixed per-job attempt count; the uniform 5x
     // policy plus this ConnectionError fail-fast covers it. Split into per-kind
@@ -374,6 +392,22 @@ export async function executeAgent(job: Job): Promise<void> {
     }
     await safeFold(agentId);
     return;
+  } else {
+    // ProviderError (5.4.1): apply the per-kind retry cap instead of BullMQ's
+    // uniform attempt count. Retryable kinds rethrow (BullMQ backoff) up to their
+    // cap, then exhaust to a quiet audit trail — no DLQ churn for a provider
+    // that keeps failing. Non-retryable (validation_failed) surfaces immediately.
+    const kind = classifyProviderError(e);
+    if (kind !== null) {
+      const cap = RETRY_CAPS[kind];
+      if (job.attemptsMade < cap) throw e;
+      getLogger().warn({ agentId, err: e, kind, attempts: job.attemptsMade }, "provider error exhausted retries");
+      await safeFold(agentId);
+      return;
+    }
+    // Unknown/LLM error: keep default retries.
+    throw e;
+  }
   }
 
   // Fire-time validation (4.11.6): the cheap model that classified the trigger

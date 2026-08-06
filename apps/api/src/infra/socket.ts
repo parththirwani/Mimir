@@ -3,6 +3,7 @@ import { getConfig, getLogger } from "@mimir/backend-core";
 import type { Redis } from "ioredis";
 import { Server } from "socket.io";
 import { parseCookies, verifyAccessToken } from "../auth/tokens.js";
+import { deliverToUser } from "./delivery.js";
 
 const cfg = getConfig();
 
@@ -69,19 +70,22 @@ export function initPubSub(subscriber: Redis): void {
   pubsubStarted = true;
   subscriber.psubscribe("user-events:*");
   subscriber.on("error", (e) => getLogger().error({ err: e }, "pub/sub redis error"));
-  subscriber.on("pmessage", (_pattern, channel, message) => {
-    const userId = channel.replace(/^user-events:/, "");
+  subscriber.on("pmessage", (_pattern, chan, message) => {
+    const userId = chan.replace(/^user-events:/, "");
     let parsed: { event?: string; payload?: unknown };
     try {
       parsed = JSON.parse(message);
     } catch {
-      getLogger().warn({ channel, message }, "dropping non-JSON pub/sub payload");
+      getLogger().warn({ channel: chan, message }, "dropping non-JSON pub/sub payload");
       return;
     }
     // Payloads carry their own event name ({event:'new_message',...}); emit on
     // that name so the web client can wire per-event handlers. Falls back to "debug".
     const eventName = typeof parsed.event === "string" ? parsed.event : "debug";
-    const delivered = emitToUser(userId, eventName, parsed.payload ?? parsed);
-    getLogger().info({ userId, eventName, delivered }, "pub/sub event forwarded to sockets");
+    // 7.4 — single delivery decision point: live socket → web push. No email:
+    // email is a watched source, not a delivery channel.
+    void deliverToUser(userId, eventName, (parsed.payload ?? {}) as { [k: string]: unknown })
+      .then((delivery) => getLogger().info({ userId, eventName, channel: delivery }, "user event delivered"))
+      .catch((e) => getLogger().error({ err: e, userId }, "delivery decision failed"));
   });
 }

@@ -25,10 +25,12 @@ export interface BrowserRuntime {
   open(url: string, waitForMs: number): Promise<HostedBrowserSession>;
 }
 
-// Domain allowlist gate. Empty allowlist = allow all (dev default); otherwise a
-// strict hostname match. Consequential browser actions are gated separately by
-// the agent's draft tool (4.10) — this boundaries WHAT can be visited.
-export function assertAllowedUrl(raw: string, allowlist?: string[]): URL {
+// Domain allowlist + denylist gate. Empty allowlist = allow all (dev default);
+// otherwise a strict hostname match. A denylist match always blocks (stronger
+// than a missing allowlist entry). Consequential browser actions are gated
+// separately by the agent's draft tool (4.10) — this boundaries WHAT can be
+// visited.
+export function assertAllowedUrl(raw: string, allowlist?: string[], denylist?: string[]): URL {
   let u: URL;
   try {
     u = new URL(raw);
@@ -40,9 +42,15 @@ export function assertAllowedUrl(raw: string, allowlist?: string[]): URL {
   }
   // Config is read lazily per call (not cached at import) so tests and live
   // config can diverge without polluting each other.
-  const domains = allowlist ?? (getConfig().BROWSER_ALLOWED_DOMAINS ?? "").split(",").map((d) => d.trim().toLowerCase()).filter(Boolean);
-  if (domains.length > 0 && !domains.includes(u.hostname.toLowerCase())) {
-    throw new ToolError("blocked", `domain ${u.hostname} not allowlisted`);
+  const cfg = getConfig();
+  const allow = allowlist ?? (cfg.BROWSER_ALLOWED_DOMAINS ?? "").split(",").map((d) => d.trim().toLowerCase()).filter(Boolean);
+  const deny = denylist ?? (cfg.BROWSER_DENIED_DOMAINS ?? "").split(",").map((d) => d.trim().toLowerCase()).filter(Boolean);
+  const host = u.hostname.toLowerCase();
+  if (deny.includes(host) || deny.some((d) => host.endsWith(`.${d}`))) {
+    throw new ToolError("blocked", `domain ${host} denied`);
+  }
+  if (allow.length > 0 && !allow.includes(host)) {
+    throw new ToolError("blocked", `domain ${host} not allowlisted`);
   }
   return u;
 }
