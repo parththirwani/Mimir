@@ -8,7 +8,7 @@ import {
 } from "@mimir/backend-core";
 import { GMAIL_INTEGRATION, gmailProvider as gmailProviderOf } from "@mimir/connection-provider";
 import type { LlmMessage } from "@mimir/shared-types";
-import { createGmailDraft, deleteGmailDraft, getGmailProfile } from "../../../worker/src/integrations/gmail/gmail.js";
+import { createGmailDraft, deleteGmailDraft, getGmailProfile, type GmailTransport } from "../../../worker/src/integrations/gmail/gmail.js";
 
 const prisma = getPrismaClient();
 
@@ -196,15 +196,17 @@ export function gmailProvider(): ReturnType<typeof gmailProviderOf> {
 }
 
 export async function createEmailDraft(userId: string, draft: { to: string; subject: string; body: string }): Promise<{ draftId: string; messageId: string }> {
-  const token = await gmailProvider().getAccessToken(userId);
-  const from = await getGmailProfile(token);
-  const created = await createGmailDraft(token, { from, ...draft });
+  const provider = gmailProvider();
+  const transport: GmailTransport = (path, opts) => provider.gmailRequest(userId, path, opts);
+  const from = await getGmailProfile(transport);
+  const created = await createGmailDraft(transport, { from, ...draft });
   return { draftId: created.id, messageId: created.messageId };
 }
 
 export async function deleteEmailDraft(userId: string, draftId: string): Promise<void> {
-  const token = await gmailProvider().getAccessToken(userId);
-  await deleteGmailDraft(token, draftId);
+  const provider = gmailProvider();
+  const transport: GmailTransport = (path, opts) => provider.gmailRequest(userId, path, opts);
+  await deleteGmailDraft(transport, draftId);
 }
 
 // Same fail-fast handling as agent-execution: an expired/revoked token flips the

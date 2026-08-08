@@ -113,6 +113,53 @@ async function safeFold(agentId: string): Promise<void> {
   }
 }
 
+// Provider failures that exhaust their retry cap (5.4.1) fold the agent quietly
+// so background watches don't spam. But a run the USER is waiting on must not
+// die in silence — surface the cause so they get an answer even when the answer
+// is "this failed". Distinct from the ConnectionError reconnect nudge (no
+// gmail.connect toolCall, no dedup — exhaustion happens once per job).
+export function providerFailureContent(kind: ProviderErrorKind, err: unknown): string {
+  const detail = err instanceof Error ? err.message : String(err);
+  switch (kind) {
+    case "malformed_response":
+      return `The Gmail connection is misconfigured — ${detail}`;
+    case "rate_limited":
+      return "Gmail is rate-limiting right now — I couldn't fetch your emails. Try again in a couple of minutes.";
+    case "provider_down":
+      return "Gmail is temporarily unavailable — I couldn't fetch your emails. Try again shortly.";
+    default:
+      return "I couldn't complete that — try again in a minute.";
+  }
+}
+
+async function surfaceProviderFailure(
+  agent: { id: string; userId: string; ownerConversationId: string },
+  kind: ProviderErrorKind,
+  err: unknown,
+): Promise<void> {
+  const content = providerFailureContent(kind, err);
+  await prisma.agentEvent.create({
+    data: {
+      agentId: agent.id,
+      eventType: "surfaced",
+      payload: { content, rationale: "provider failure exhausted retries", category: "actionable" },
+    },
+  });
+  const message = await prisma.message.create({
+    data: {
+      conversationId: agent.ownerConversationId,
+      role: "assistant",
+      content,
+      status: "complete",
+    },
+  });
+  try {
+    await publishUserEvent(agent.userId, "new_message", { conversationId: agent.ownerConversationId, messageId: message.id });
+  } catch (publishErr) {
+    getLogger().error({ err: publishErr, agentId: agent.id }, "publish failed (provider failure message already written)");
+  }
+}
+
 // Structured {surface, rationale, category}. Parse failure or low confidence ->
 // don't surface (safe default: an unparseable filter shouldn't spam).
 interface FilterVerdict {
@@ -402,6 +449,9 @@ export async function executeAgent(job: Job): Promise<void> {
       const cap = RETRY_CAPS[kind];
       if (job.attemptsMade < cap) throw e;
       getLogger().warn({ agentId, err: e, kind, attempts: job.attemptsMade }, "provider error exhausted retries");
+      if (userTriggered(trigger)) {
+        await surfaceProviderFailure(agent, kind, e);
+      }
       await safeFold(agentId);
       return;
     }

@@ -53,7 +53,7 @@ beforeAll(async () => {
       { id: browserAgent, userId, ownerConversationId: convId, taskDescription: "watch browser", entity: "browser", status: "active" },
     ],
   });
-});
+}); console.error("DBG beforeAll ran, agent", gmailAgent);
 
 afterAll(async () => {
   for (const id of enqueued) await q.getJob(id).then((j) => j?.remove());
@@ -62,7 +62,7 @@ afterAll(async () => {
   await prisma.conversation.deleteMany({ where: { userId } });
   await prisma.user.delete({ where: { id: userId } });
   await q.close();
-});
+}); console.error("DBG beforeAll ran, agent", gmailAgent);
 
 describe("runAdaptivePolling (6.4)", () => {
   test("fans out to ACTIVE task agents by entity only; dormant excluded", async () => {
@@ -84,6 +84,7 @@ describe("runAdaptivePolling (6.4)", () => {
   });
 
   test("no surfaced activity since last poll doubles the interval; forced reconcile ignores it", async () => {
+    console.error("T2 start; agent", gmailAgent, "events", await prisma.agentEvent.count({ where: { agentId: gmailAgent } }));
     const cache = fakeCache({ last: "0", interval: String(2 * 60_000) });
     await runAdaptivePolling({ cache, queue: q, now: fakeNow });
     const pollMinute = Math.floor(fakeNow() / 60000);
@@ -113,4 +114,4 @@ describe("runAdaptivePolling (6.4)", () => {
     const rec = await cache.hgetall(`conn-poll:${userId}:gmail`);
     expect(rec.interval).toBe(String(60_000));
   });
-});
+}); console.error("DBG beforeAll ran, agent", gmailAgent);

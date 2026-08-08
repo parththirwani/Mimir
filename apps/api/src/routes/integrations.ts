@@ -57,10 +57,12 @@ export const integrationsRouter: Router = Router();
 // Dedicated Gmail routes FIRST — the generic /integrations/:providerKey routes
 // below would otherwise shadow these (the roster uses key `google-mail`, while
 // the chat UI calls `gmail`; a generic match would 404 "unknown integration").
-// GET /api/v1/integrations/gmail/connect — initiate the OAuth flow. Nango
+// POST /api/v1/integrations/gmail/connect — initiate the OAuth flow. Nango
 // returns a sessionToken for its in-page Connect UI; Composio returns an
 // authorizationUrl to redirect the browser to. The UI picks whichever is present.
-integrationsRouter.get("/integrations/gmail/connect", requireAuth, async (req, res) => {
+// POST (not GET) so the browser never caches the minted OAuth session — a cached
+// GET 304 would hand back a stale/empty body instead of a fresh connect URL.
+integrationsRouter.post("/integrations/gmail/connect", requireAuth, async (req, res) => {
   const userId = req.userId;
   if (!userId) {
     res.status(401).json({ error: { code: "UNAUTHORIZED", message: "Not authenticated" } });
@@ -70,6 +72,13 @@ integrationsRouter.get("/integrations/gmail/connect", requireAuth, async (req, r
     const { sessionToken, authorizationUrl } = await gmailProvider(cfg, store, gmailCallbackUrl).initiateOAuth(userId);
     res.json({ sessionToken, authorizationUrl });
   } catch (e) {
+    // Composio's SDK refuses to mint a link when the user already has an ACTIVE
+    // connected account (without allowMultiple). That's not a config failure —
+    // surface it as a state refresh, not the misleading "Is Nango configured?".
+    if ((e as Error)?.name === "ComposioMultipleConnectedAccountsError") {
+      res.json({ alreadyConnected: true });
+      return;
+    }
     getLogger().error({ err: e, userId, provider: "gmail" }, "gmail connect session failed");
     const err = mapConnectError(e);
     res.status(err.status).json({ error: { code: err.code, message: err.message } });
@@ -92,13 +101,14 @@ integrationsRouter.get("/integrations/gmail/callback", requireAuth, async (req, 
   } catch (e) {
     getLogger().error({ err: e, userId }, "gmail callback failed");
   }
-  res.redirect(cfg.WEB_APP_URL ?? "/");
+  res.redirect(`${cfg.WEB_APP_URL ?? ""}/chat`);
 });
 
 // GET /api/v1/integrations/gmail — status the UI renders the connect link from.
-// If no local row exists, reconcile against Nango first: the Connect UI has no
-// success redirect, so a Nango connection may exist without the local row (e.g.
-// the tab closed mid-flow). A Nango outage falls through to connected:false.
+// If no connected row exists, reconcile against the provider: the row may be
+// missing (tab closed mid-flow) OR stale (worker flips it to "expired" on a
+// transient token error while Composio still has the account ACTIVE). Both are
+// healed here so chat and the settings panel agree.
 integrationsRouter.get("/integrations/gmail", requireAuth, async (req, res) => {
   const userId = req.userId;
   if (!userId) {
@@ -107,7 +117,7 @@ integrationsRouter.get("/integrations/gmail", requireAuth, async (req, res) => {
   }
   const provider = gmailProvider(cfg, store, gmailCallbackUrl);
   let connection = await provider.getConnection(userId);
-  if (!connection) {
+  if (connection?.status !== "connected") {
     try {
       await provider.syncConnection(userId);
     } catch (e) {
@@ -115,7 +125,7 @@ integrationsRouter.get("/integrations/gmail", requireAuth, async (req, res) => {
     }
     connection = await provider.getConnection(userId);
   }
-  res.json({ connected: connection != null });
+  res.json({ connected: connection?.status === "connected" });
 });
 
 // POST /api/v1/integrations/gmail/disconnect — revoke the Nango connection + drop
@@ -132,7 +142,10 @@ integrationsRouter.post("/integrations/gmail/disconnect", requireAuth, async (re
 });
 
 // GET /api/v1/integrations — the full roster with per-provider connected status
-// (5.7.3: one settings page, not one page per provider).
+// (5.7.3: one settings page, not one page per provider). Reconciles each
+// non-connected entry against its provider so this panel agrees with the chat
+// page's per-provider status route (both treat only status === "connected" as
+// connected — a stale "expired" row is healed, not shown as disconnected).
 integrationsRouter.get("/integrations", requireAuth, async (req, res) => {
   const userId = req.userId;
   if (!userId) {
@@ -141,6 +154,15 @@ integrationsRouter.get("/integrations", requireAuth, async (req, res) => {
   }
   const rows = await prisma.integrationConnection.findMany({ where: { userId }, select: { provider: true, status: true } });
   const statusByKey = new Map(rows.map((r) => [r.provider, r.status]));
+  for (const r of ROSTER) {
+    if (statusByKey.get(r.key) === "connected") continue;
+    const provider = r.key === GMAIL_INTEGRATION ? gmailProvider(cfg, store, gmailCallbackUrl) : providerForKey(r.key);
+    try {
+      if (await provider.syncConnection(userId)) statusByKey.set(r.key, "connected");
+    } catch (e) {
+      getLogger().error({ err: e, userId, provider: r.key }, "integration reconciliation failed");
+    }
+  }
   const nango = cfg.NANGO_SECRET_KEY != null;
   res.json({
     nangoConfigured: nango,

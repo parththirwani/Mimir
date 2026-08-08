@@ -89,7 +89,7 @@ export function browserFetchTask(runtime: BrowserRuntime = defaultRuntime, opts:
   return {
     kind: "task",
     name: "browser_fetch",
-    description: "Fetch the text content of a single page in a hosted headless browser. Domain allowlisted.",
+    description: "Fetch the text content of a single page in a hosted headless browser. Domain allowlisted. For live web lookups, pass a search-engine results page URL (e.g. https://html.duckduckgo.com/html/?q=...).",
     inputSchema: z.object({
       url: z.string(),
       waitForMs: z.number().int().min(0).max(15000).optional(),

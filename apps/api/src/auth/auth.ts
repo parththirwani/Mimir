@@ -247,6 +247,18 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     res.status(401).json({ error: { code: "UNAUTHORIZED", message: "Not authenticated" } });
     return;
   }
+  // The JWT only proves the signature, not that the user still exists — an
+  // orphaned-but-unexpired token (e.g. after a DB reset) passed auth and then
+  // died as an FK violation on the first write (Conversation.create). Verify the
+  // row so stale sessions bounce to login instead of 500ing mid-request.
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+  if (!user) {
+    getLogger().warn({ userId }, "session refers to a missing user; clearing cookies");
+    res.clearCookie("access_token", { path: "/" });
+    res.clearCookie("refresh_token", { path: REFRESH_TOKEN_COOKIE_PATH });
+    res.status(401).json({ error: { code: "UNAUTHORIZED", message: "Not authenticated" } });
+    return;
+  }
   req.userId = userId;
   next();
 }

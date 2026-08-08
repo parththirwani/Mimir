@@ -1,11 +1,13 @@
 import { Nango } from "@nangohq/node";
 import { ConnectionError, NotConfiguredError, ProviderError } from "./types.js";
-import type { ConnectionErrorKind, ConnectionProvider, IntegrationConnectionStore } from "./types.js";
+import type { ConnectionErrorKind, ConnectionProvider, GmailRequestOptions, GmailRequestResult, IntegrationConnectionStore } from "./types.js";
 
 // Nango's provider config key for the Gmail API is `google-mail` (the id the
 // account owner set up in Nango). If the Nango integration is ever renamed,
 // this is the one place to update it.
 export const GMAIL_INTEGRATION = "google-mail";
+
+const GMAIL_API = "https://gmail.googleapis.com";
 
 export interface NangoProviderOptions {
   secretKey?: string;
@@ -120,6 +122,32 @@ export class NangoConnectionProvider implements ConnectionProvider {
     return conn.credentials.access_token;
   }
 
+  // Mirror of Composio's gmailRequest so the shared Gmail transport works on the
+  // Nango rollback path too: resolve the raw token, then hit gmail.googleapis.com
+  // directly. Same { status, data } contract, same upstream error mapping upstream
+  // (gmail.ts), so switching back to Nango requires no Gmail-layer changes.
+  async gmailRequest(userId: string, path: string, opts: GmailRequestOptions = {}): Promise<GmailRequestResult> {
+    const connectionId = await this.findConnectionId(userId);
+    if (!connectionId) throw new ConnectionError("not_connected", `no ${this.providerKey} connection for user`);
+    const token = await this.getAccessToken(userId);
+    const { method = "GET", body } = opts;
+    const res = await fetch(`${GMAIL_API}${path}${buildQuery(opts.query)}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    let data: unknown;
+    try {
+      data = res.status === 204 ? undefined : await res.json();
+    } catch {
+      data = undefined;
+    }
+    return { status: res.status, data };
+  }
+
   async revoke(userId: string): Promise<void> {
     const row = await this.store.findFirst({ where: { userId, provider: this.providerKey } });
     if (!row) return;
@@ -153,4 +181,16 @@ export class NangoConnectionProvider implements ConnectionProvider {
     if (String((e as Error)?.message ?? "").includes("invalid_credentials")) return "expired";
     return null;
   }
+}
+
+// `?maxResults=10&metadataHeaders=From&metadataHeaders=Subject` — arrays render
+// as repeated keys, matching what the Composio proxy parameters array expresses.
+function buildQuery(query?: Record<string, string | number | string[]>): string {
+  const parts: string[] = [];
+  for (const [name, raw] of Object.entries(query ?? {})) {
+    for (const v of Array.isArray(raw) ? raw : [raw]) {
+      parts.push(`${encodeURIComponent(name)}=${encodeURIComponent(String(v))}`);
+    }
+  }
+  return parts.length ? `?${parts.join("&")}` : "";
 }

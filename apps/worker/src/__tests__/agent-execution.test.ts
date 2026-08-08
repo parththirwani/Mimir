@@ -5,7 +5,7 @@ process.env.DATABASE_URL = "postgres://mimir:mimir@localhost:5434/mimir";
 process.env.REDIS_URL = "redis://localhost:6379";
 process.env.JWT_SECRET = "agent-execution-test-secret";
 
-const { userTriggered, filterSystemPrompt } = await import("../agent/agent-execution.js");
+const { userTriggered, filterSystemPrompt, providerFailureContent } = await import("../agent/agent-execution.js");
 
 describe("userTriggered (surfacing policy)", () => {
   test("a direct user message is always surfaced, never filtered", () => {
@@ -21,6 +21,20 @@ describe("userTriggered (surfacing policy)", () => {
     expect(userTriggered(undefined)).toBe(false);
     expect(userTriggered("webhook")).toBe(false);
     expect(userTriggered("trigger_fired")).toBe(false);
+  });
+});
+
+describe("providerFailureContent (surface-on-exhaustion messaging)", () => {
+  test("malformed_response surfaces the provider's actionable detail", () => {
+    const err = new Error("composio returned a masked access_token — disable 'Mask Connected Account Secrets' in Composio project settings");
+    expect(providerFailureContent("malformed_response", err)).toContain("misconfigured");
+    expect(providerFailureContent("malformed_response", err)).toContain("Mask Connected Account Secrets");
+  });
+
+  test("transient kinds get friendly retry language, not raw errors", () => {
+    expect(providerFailureContent("rate_limited", new Error("boom"))).toContain("rate-limiting");
+    expect(providerFailureContent("rate_limited", new Error("boom"))).not.toContain("boom");
+    expect(providerFailureContent("provider_down", new Error("boom"))).toContain("unavailable");
   });
 });
 

@@ -1,21 +1,24 @@
 import { Composio } from "@composio/core";
-import { ConnectionError, ProviderError, NotConfiguredError } from "./types.js";
-import type { ConnectionProvider, ConnectionErrorKind, IntegrationConnectionStore } from "./types.js";
+import { ConnectionError, NotConfiguredError } from "./types.js";
+import type {
+  ConnectionProvider,
+  ConnectionErrorKind,
+  GmailRequestOptions,
+  GmailRequestResult,
+  IntegrationConnectionStore,
+} from "./types.js";
 import { GMAIL_INTEGRATION } from "./nango-provider.js";
 
 // Composio is the primary Gmail connection provider (no connection caps — it's
-// metered on tool calls instead). Unlike Nango, which hides OAuth behind an
-// in-page connect UI and returns a raw token on demand, Composio is a
-// tool-execution platform. This provider reaches INTO the connected account's
-// `state` for a raw Google OAuth access token so the existing Gmail REST code
-// (reads/drafts/send against gmail.googleapis.com) keeps working untouched.
+// metered on tool calls instead).
 //
-// ponytail: the token lives at `connectedAccount.state.val.access_token`, which
-// the SDK documents (`state` is the first-class credential field; `data`/`params`
-// are the deprecated legacy fields). It's still a reach-into-the-record, so
-// getAccessToken validates the exact shape at runtime and throws loudly if
-// Composio ever moves it — fail fast into the existing error path + canary,
-// never a silent undefined that breaks sends days later.
+// Composio redacts connected-account secrets (`access_token`, `refresh_token`,
+// ...) on EVERY read endpoint — there is no unmasked variant of
+// `connectedAccounts.get()`. So this provider never touches a raw token. Every
+// Gmail API call goes through `composio.tools.proxyExecute()`, which injects the
+// connected account's credentials server-side and returns `{ status, data }`.
+// That makes the token-masking "fix" moot and removes the raw-token path that
+// 401'd at Gmail.
 const COMPOSIO_DEFAULT_BASE_URL = "https://backend.composio.dev";
 
 export interface ComposioProviderOptions {
@@ -73,12 +76,25 @@ export class ComposioConnectionProvider implements ConnectionProvider {
     await this.upsertConnection(userId, id, "connected");
   }
 
-  // Reconciliation backstop: heal a missing local row from Composio by the
-  // user's gmail connected account. Mirrors Nango's syncConnection.
+  // Reconciliation backstop: heal a missing OR stale local row from Composio by
+  // the user's gmail connected account. Unlike the Nango mirror, always re-check
+  // Composio — the worker flips the row to "expired" on a transient token error
+  // (fail-fast reconnect UX), and if Composio still has the account ACTIVE that
+  // row must be healed back, or the UI shows a bogus "connect" state forever.
   async syncConnection(userId: string, connectionId?: string): Promise<boolean> {
-    if (await this.findConnectionId(userId)) return true;
     const id = connectionId ?? (await this.findComposioConnectionId(userId));
     if (!id) return false;
+    // Heal only when the account actually yields a working connection. The
+    // account can stay listed ACTIVE while its token is dead (revoked), and
+    // healing then fights the worker's fail-fast "expired" flip forever. Probes
+    // with the same proxyExecute transport the data path uses — one failure
+    // mode, no separate health-check code to diverge.
+    try {
+      const { status } = await this.gmailRequest(userId, "/gmail/v1/users/me/profile", { connectionId: id });
+      if (status !== 200) return false;
+    } catch {
+      return false;
+    }
     await this.upsertConnection(userId, id, "connected");
     return true;
   }
@@ -88,21 +104,32 @@ export class ComposioConnectionProvider implements ConnectionProvider {
     return row ? { status: row.status } : null;
   }
 
-  // Raw Google access token for gmail.googleapis.com. Shape-checked at runtime
-  // and throws loudly if Composio's record shape drifts (see header note).
-  async getAccessToken(userId: string): Promise<string> {
-    const connectionId = await this.findConnectionId(userId);
+  // The single Gmail transport: composite the request to Composio's proxy
+  // endpoint, which injects the connected account's credentials server-side and
+  // returns the upstream HTTP status + body. Raw tokens never touch this app.
+  async gmailRequest(userId: string, path: string, opts: GmailRequestOptions = {}): Promise<GmailRequestResult> {
+    const connectionId = opts.connectionId ?? (await this.findConnectionId(userId));
     if (!connectionId) throw new ConnectionError("not_connected", "no gmail connection for user");
-    let account: { state?: unknown };
+    const { method = "GET", body } = opts;
+    const parameters = queryToProxyParameters(opts.query);
     try {
-      account = await this.composio().connectedAccounts.get(connectionId as never);
+      // ponytail: the SDK's proxyExecute is typed with the client's snake_case
+      // wire form (ToolProxyParams) but validates a flat camelCase body at
+      // runtime (endpoint/method/body/parameters/connectedAccountId). The cast
+      // bridges the misaligned type; the runtime schema is authoritative.
+      const res = (await this.composio().tools.proxyExecute({
+        endpoint: path,
+        method,
+        body,
+        parameters,
+        connectedAccountId: connectionId,
+      } as never)) as { status: number; data: unknown };
+      return { status: res.status, data: res.data };
     } catch (e) {
       const kind = this.composioErrorKind(e);
       if (kind) throw new ConnectionError(kind, String((e as Error)?.message ?? e));
       throw e;
     }
-    const token = this.extractAccessToken(account.state);
-    return token;
   }
 
   async revoke(userId: string): Promise<void> {
@@ -137,28 +164,28 @@ export class ComposioConnectionProvider implements ConnectionProvider {
     else await this.store.create({ data: { userId, provider: GMAIL_INTEGRATION, connectionId, status } });
   }
 
-  // The landmine guardrail: `state` is documented as the credential field, but
-  // reaching the token requires walking OAuth2 -> ACTIVE -> access_token. If any
-  // step isn't exactly where expected, throw loudly instead of returning
-  // undefined — the canary job and the worker's fail-fast both surface this.
-  private extractAccessToken(state: unknown): string {
-    const s = state as { authScheme?: string; val?: unknown } | null | undefined;
-    if (!s || s.authScheme !== "OAUTH2") {
-      throw new ProviderError("malformed_response", "composio gmail connection has unexpected auth state");
-    }
-    const val = s.val as { status?: string; access_token?: unknown } | null | undefined;
-    if (!val || val.status !== "ACTIVE" || typeof val.access_token !== "string") {
-      throw new ProviderError("malformed_response", "composio gmail connection has no ACTIVE access_token");
-    }
-    return val.access_token;
-  }
-
+  // The @composio client (stainless codegen) throws its APIError subclasses on
+  // any non-2xx with `status` on the TOP level (not axios's response.status). A
+  // proxied call can fail at the Composio layer (deleted/403 access) and needs
+  // the same mapping the data path's status check applies to upstream errors.
   private composioErrorKind(e: unknown): ConnectionErrorKind | null {
-    const status = (e as { response?: { status?: number } })?.response?.status;
+    const status = (e as { status?: number })?.status ?? (e as { response?: { status?: number } })?.response?.status;
     if (status === 404 || status === 400) return "not_connected";
-    if (status === 401) return "expired";
+    if (status === 401 || status === 403) return "expired";
     const code = (e as { code?: string })?.code;
     if (code === "EXIT_CODE_429" || code === "RATE_LIMITED") return "expired";
     return null;
   }
+}
+
+// Expand `{ name: "a" | "a", "b": ["x","y"] }` into proxy parameters, rendering
+// arrays as repeated keys (Gmail's `metadataHeaders=From&metadataHeaders=Subject`).
+function queryToProxyParameters(query?: Record<string, string | number | string[]>): { in: "query"; name: string; value: string }[] {
+  const parameters: { in: "query"; name: string; value: string }[] = [];
+  for (const [name, raw] of Object.entries(query ?? {})) {
+    for (const v of Array.isArray(raw) ? raw : [raw]) {
+      parameters.push({ in: "query", name, value: String(v) });
+    }
+  }
+  return parameters;
 }

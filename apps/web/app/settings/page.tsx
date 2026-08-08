@@ -73,7 +73,15 @@ export default function SettingsPage() {
       setError(body?.error?.message ?? "Could not start the connect flow (is Nango configured?)");
       return;
     }
-    const { sessionToken, authorizationUrl } = (await res.json()) as { sessionToken?: string; authorizationUrl?: string };
+    const { sessionToken, authorizationUrl, alreadyConnected } = (await res.json()) as {
+      sessionToken?: string;
+      authorizationUrl?: string;
+      alreadyConnected?: boolean;
+    };
+    if (alreadyConnected) {
+      void refresh();
+      return;
+    }
     // Composio hands a redirect URL; Nango a session token for its in-page widget.
     if (authorizationUrl) {
       window.location.href = authorizationUrl;

@@ -15,6 +15,8 @@ export { ConnectionError, NotConfiguredError, ProviderError } from "./types.js";
 export type {
   ConnectionErrorKind,
   ConnectionProvider,
+  GmailRequestOptions,
+  GmailRequestResult,
   IntegrationConnectionStore,
   ProviderErrorKind,
 } from "./types.js";

@@ -1,6 +1,6 @@
 import { getConfig, getLogger, getPrismaClient } from "@mimir/backend-core";
 import { GMAIL_INTEGRATION, gmailProvider } from "@mimir/connection-provider";
-import { registerGmailWatch } from "./gmail.js";
+import { registerGmailWatch, type GmailTransport } from "./gmail.js";
 
 // 6.2.2 — Gmail watch subscriptions expire (~7 days); this daily sweep re-registers
 // watch() for every connected user so push keeps flowing. Gmail's watch is
@@ -10,7 +10,9 @@ const prisma = getPrismaClient();
 
 export interface WatchRenewDeps {
   topic?: string;
-  getToken?: (userId: string) => Promise<string>;
+  // Override the per-user Gmail transport (test seam). Defaults to the provider's
+  // gmailRequest — the same transport the read/send paths use.
+  request?: (userId: string) => GmailTransport;
 }
 
 export async function runWatchRenewal(deps: WatchRenewDeps = {}): Promise<number> {
@@ -21,7 +23,7 @@ export async function runWatchRenewal(deps: WatchRenewDeps = {}): Promise<number
     return 0;
   }
   const provider = gmailProvider(cfg, prisma.integrationConnection, `${cfg.PUBLIC_API_URL ?? cfg.WEB_APP_URL ?? ""}/api/v1/integrations/gmail/callback`);
-  const getToken = deps.getToken ?? ((userId: string) => provider.getAccessToken(userId));
+  const request = deps.request ?? ((userId: string): GmailTransport => (path, opts) => provider.gmailRequest(userId, path, opts));
 
   const connections = await prisma.integrationConnection.findMany({
     where: { provider: GMAIL_INTEGRATION, status: "connected" },
@@ -31,8 +33,7 @@ export async function runWatchRenewal(deps: WatchRenewDeps = {}): Promise<number
   let renewed = 0;
   for (const { userId } of connections) {
     try {
-      const token = await getToken(userId);
-      await registerGmailWatch(token, topic);
+      await registerGmailWatch(request(userId), topic);
       renewed += 1;
       getLogger().info({ userId }, "gmail watch re-registered");
     } catch (e) {

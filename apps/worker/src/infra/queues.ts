@@ -97,8 +97,8 @@ export async function scheduleWatchRenewal(): Promise<void> {
   );
 }
 
-// Daily connection canary — exercises gmail getAccessToken so a silent break in
-// the provider's token extraction is caught by a job, not a user.
+// Daily connection canary — exercises gmail gmailRequest so a silent break in
+// the provider's proxy transport is caught by a job, not a user.
 export async function scheduleConnectionCanary(): Promise<void> {
   await agentTriggers.upsertJobScheduler(
     "connection-canary",

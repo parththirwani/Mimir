@@ -40,9 +40,9 @@ export const configSchema = z.object({
   GOOGLE_WATCH_CLIENT_EMAIL: z.string().min(1).optional(),
   GOOGLE_WATCH_PRIVATE_KEY: z.string().min(1).optional(),
   GOOGLE_PUBSUB_TOPIC: z.string().min(1).optional(),
-  // Connection-canary: a user whose Gmail connection getAccessToken() is
-  // exercised daily to detect a silent break in the provider's token
-  // extraction (Composio's shape is reached-into). Skipped when unset.
+  // Connection-canary: a user whose Gmail connection gmailRequest() is
+  // exercised daily to detect a silent break in the provider's proxy
+  // transport. Skipped when unset.
   CONNECTION_CANARY_USER_ID: z.string().min(1).optional(),
   // Web Push (7.1): VAPID keys. Absent => push delivery is disabled and events
   // only reach users with a live socket (message stays in the thread otherwise).

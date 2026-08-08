@@ -7,7 +7,7 @@ import {
 } from "@mimir/backend-core";
 import { ConnectionError, GMAIL_INTEGRATION, gmailProvider as gmailProviderOf } from "@mimir/connection-provider";
 import type { Job } from "bullmq";
-import { sendGmailDraft } from "../integrations/gmail/gmail.js";
+import { sendGmailDraft, type GmailTransport } from "../integrations/gmail/gmail.js";
 import { publishUserEvent } from "../infra/redis.js";
 
 // The email-jobs processor: the API's confirm path enqueues an email_send
@@ -73,8 +73,9 @@ export async function sendEmailJob(job: Job): Promise<void> {
 
   let sentId: string;
   try {
-    const token = await gmailProvider().getAccessToken(userId);
-    sentId = await sendGmailDraft(token, draftId);
+    const provider = gmailProvider();
+    const transport: GmailTransport = (path, opts) => provider.gmailRequest(userId, path, opts);
+    sentId = await sendGmailDraft(transport, draftId);
   } catch (e) {
     if (e instanceof ConnectionError) {
       // Fail-fast like agent-execution: flip the connection row so the UI offers

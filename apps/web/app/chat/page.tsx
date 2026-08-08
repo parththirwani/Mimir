@@ -224,13 +224,21 @@ export default function ChatPage() {
 
   const connectGmail = useCallback(async () => {
     setError(null);
-    const res = await fetch(`${API}/integrations/gmail/connect`, { credentials: "include" });
+    const res = await fetch(`${API}/integrations/gmail/connect`, { method: "POST", credentials: "include" });
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
       setError(body?.error?.message ?? "Couldn't start Gmail connect — try again");
       return;
     }
-    const { sessionToken, authorizationUrl } = (await res.json()) as { sessionToken?: string; authorizationUrl?: string };
+    const { sessionToken, authorizationUrl, alreadyConnected } = (await res.json()) as {
+      sessionToken?: string;
+      authorizationUrl?: string;
+      alreadyConnected?: boolean;
+    };
+    if (alreadyConnected) {
+      refreshGmailStatus();
+      return;
+    }
     // Composio hands back a redirect URL; Nango a session token for its in-page widget.
     if (authorizationUrl) {
       window.location.href = authorizationUrl;
@@ -315,7 +323,7 @@ export default function ChatPage() {
           <div className="relative mx-auto w-full max-w-2xl px-5 pb-16 pt-14">
             <h1 className="sr-only">Your thread with Mimir</h1>
             <ThreadBubbles
-              messages={messages}
+              messages={gmailConnected ? messages.map((m) => (m.connectable ? { ...m, connectable: false } : m)) : messages}
               streamingId={streamingId}
               onStreamDone={() => {
                 if (streamingId) lastStreamedRef.current = streamingId;

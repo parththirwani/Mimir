@@ -2,6 +2,22 @@
 // interface pays for itself — but keep it minimal: no provider-specific knobs
 // leak out, only the five auth operations the routes/worker need.
 
+export interface GmailRequestOptions {
+  method?: string;
+  body?: unknown;
+  // Query params expanded into repeated key=value pairs when a value is an
+  // array (Gmail's `metadataHeaders=From&metadataHeaders=Subject`).
+  query?: Record<string, string | number | string[]>;
+  // Force a specific connected account instead of the store row (Composio's
+  // syncConnection heal probe, where no local row may exist yet).
+  connectionId?: string;
+}
+
+export interface GmailRequestResult {
+  status: number;
+  data: unknown;
+}
+
 export interface ConnectionProvider {
   initiateOAuth(userId: string): Promise<{ sessionToken: string; authorizationUrl: string }>;
   // connectionId is provider-optional: Composio's OAuth callback carries the
@@ -11,7 +27,10 @@ export interface ConnectionProvider {
   // Heal a missing local row from the upstream provider (Composio by user's
   // gmail account; Nango by tag). Returns whether a row now exists.
   syncConnection(userId: string, connectionId?: string): Promise<boolean>;
-  getAccessToken(userId: string): Promise<string>;
+  // The single Gmail API transport. Credentials never reach this app: Nango
+  // injects them client-side, Composio injects them server-side (proxyExecute).
+  // Returns the upstream HTTP status + parsed body so callers map errors once.
+  gmailRequest(userId: string, path: string, opts?: GmailRequestOptions): Promise<GmailRequestResult>;
   revoke(userId: string): Promise<void>;
 }
 
