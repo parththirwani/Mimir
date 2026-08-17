@@ -14,6 +14,7 @@ const prisma = getPrismaClient();
 export type ClassificationAction =
   | "answer_directly"
   | "spawn_agent"
+  | "one_shot"
   | "manage_cancel"
   | "manage_list"
   | "ask_clarification";
@@ -28,7 +29,7 @@ export interface Classification {
 
 // Actions that must NEVER carry a targetAgentId (a cancel must not become a
 // retarget/resume). Defensive: even if the model emits one, we strip it.
-const NO_TARGET_ACTIONS: ClassificationAction[] = ["manage_cancel", "manage_list", "ask_clarification", "answer_directly"];
+const NO_TARGET_ACTIONS: ClassificationAction[] = ["manage_cancel", "manage_list", "ask_clarification", "answer_directly", "one_shot"];
 
 export const ANSWER_DIRECTLY: Classification = { action: "answer_directly", confidence: 0 };
 
@@ -77,7 +78,26 @@ export function parseRewrite(raw: string, fallback: string): string {
   }
 }
 
+// A bare greeting/small talk message with no actionable content must NOT be
+// run through the rewrite stage: rewrite would fold prior conversation into it
+// and invent a task from a greeting ("yo yo wassup" after a pending-setup
+// thread -> "Please set up monitoring for emails from Alice" -> spawn_agent /
+// ask_clarification, both confident). Detect and return the greeting verbatim,
+// which also skips a cheap LLM call on the common greeting path.
+const GREETING_TOKENS = new Set([
+  "hey", "hi", "hii", "hello", "yo", "sup", "wassup", "wassap", "whats", "what's",
+  "up", "howdy", "hola", "hiya", "hai", "aloha", "greetings", "morning", "afternoon",
+  "evening", "good", "how", "are", "you", "doing", "going", "how's", "hows", "it", "is",
+]);
+
+export function isPureGreeting(content: string): boolean {
+  const words = content.toLowerCase().replace(/[^a-z0-9']/g, " ").split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 6) return false;
+  return words.every((w) => GREETING_TOKENS.has(w));
+}
+
 export async function rewriteQuery(userId: string, history: { role: string; content: string }[], content: string): Promise<string> {
+  if (isPureGreeting(content)) return content;
   const context = rewriteHistoryContext(history);
   let result;
   try {
@@ -127,6 +147,7 @@ export function parseClassification(raw: string): Classification {
     const rawAction = String(json.action ?? "").trim() as ClassificationAction;
     const action: ClassificationAction =
       rawAction === "spawn_agent" ||
+      rawAction === "one_shot" ||
       rawAction === "manage_cancel" ||
       rawAction === "manage_list" ||
       rawAction === "ask_clarification"
@@ -134,13 +155,14 @@ export function parseClassification(raw: string): Classification {
         : "answer_directly";
     const confidence = typeof json.confidence === "number" ? json.confidence : 0;
     if (action === "answer_directly") return ANSWER_DIRECTLY;
-    // Confidence gates only the state-creating action (spawn_agent). A cancel /
-    // list / clarify must still act even when the model is unsure — gating it
-    // here degrades a "stop" into a chat reply and leaves the watch running (the
-    // exact bug the management feature exists to fix). These intents are
-    // non-destructive: archiveAgents never wipes state on a specific miss, so a
-    // low-confidence classification can't nuke unrelated watches.
-    if (action === "spawn_agent" && confidence < 0.5) return ANSWER_DIRECTLY;
+    // Spec 4.2.2 fallback: confidence < 0.5 forces answer_directly. Applied to
+    // the state-creating action (spawn_agent), to the tool-delegating one_shot,
+    // and to ask_clarification — a low-confidence guess must not fire a
+    // delegation or the canned "be more specific" reply; it falls back to a
+    // normal chat answer. cancel/list stay un-gated: a low-confidence "stop"
+    // must still act or the watch keeps running (the exact bug the management
+    // feature exists to fix), and archiveAgents never wipes state on a miss.
+    if (confidence < 0.5 && (action === "spawn_agent" || action === "ask_clarification" || action === "one_shot")) return ANSWER_DIRECTLY;
     // Cancel/list/clarify never resolve to an existing agent — strip any bogus
     // targetAgentId the model might emit so message.ts cannot retarget it.
     const targetAgentId =

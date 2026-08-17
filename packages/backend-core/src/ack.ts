@@ -11,6 +11,7 @@ export type AckKind =
   | "draft"
   | "send"
   | "spawn"
+  | "one_shot"
   | "retarget"
   | "agent_draft_confirm"
   | "send_result"
@@ -22,6 +23,7 @@ export const ACK_FALLBACKS: Record<AckKind, string> = {
   draft: "Preparing your draft — one sec.",
   send: "Sending it now — I'll confirm here in a moment.",
   spawn: "Got it — I'm on it. I'll surface anything relevant here as it happens.",
+  one_shot: "On it — checking that now.",
   retarget: "Got it — I'm already on that. I'll keep you posted here.",
   agent_draft_confirm: "On it — I'll handle that now.",
   send_result: "Sent.",

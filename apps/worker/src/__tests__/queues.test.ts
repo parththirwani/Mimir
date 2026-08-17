@@ -6,7 +6,7 @@ process.env.DATABASE_URL = "postgres://mimir:mimir@localhost:5434/mimir";
 process.env.REDIS_URL = "redis://localhost:6379";
 process.env.JWT_SECRET = "queue-test-secret";
 
-const { agentJobs, agentTriggerProcessor, agentTriggers, emailJobs, failedAgentJobs, scheduleMailPollSweep, startWorkers, webhookProcessing, wireDlq } = await import("../infra/queues.js");
+const { agentJobs, agentTriggerProcessor, agentTriggers, emailJobs, failedAgentJobs, onceJobs, scheduleMailPollSweep, startWorkers, webhookProcessing, wireDlq } = await import("../infra/queues.js");
 
 const connection = { url: process.env.REDIS_URL, maxRetriesPerRequest: null };
 const workers = startWorkers();
@@ -25,6 +25,7 @@ afterAll(async () => {
   await Promise.all([
     ...workers.map((w) => w.close()),
     agentJobs.close(),
+    onceJobs.close(),
     agentTriggers.close(),
     webhookProcessing.close(),
     failedAgentJobs.close(),
@@ -85,4 +86,44 @@ describe("mail-poll sweep (lazy)", () => {
     await w.close();
     await q.close();
   }, 30_000);
+});
+
+describe("poller removal wiring", () => {
+  test("queues module loads without throwing — no dangling poller exports remain", async () => {
+    // The import above already proving the module evaluates is the load check;
+    // this re-asserts the exported surface is exactly what remains. A dangling
+    // import (catched only by runtime, not tsc) would have thrown at load time
+    // and failed the whole file.
+    const mod = (await import("../infra/queues.js")) as Record<string, unknown>;
+    expect(mod.scheduleAdaptivePolling).toBeUndefined();
+    expect(mod.scheduleReconciliation).toBeUndefined();
+    expect(typeof mod.scheduleMailPollSweep).toBe("function");
+    expect(typeof mod.scheduleTriggerTick).toBe("function");
+    expect(typeof mod.scheduleWatchRenewal).toBe("function");
+    expect(typeof mod.scheduleConnectionCanary).toBe("function");
+    expect(typeof mod.agentTriggerProcessor).toBe("function");
+  });
+
+  test("agentTriggerProcessor has no adaptive-polling or reconciliation case (both hit the default noop)", async () => {
+    // If someone re-added a case for either name, dispatching these job names
+    // would run whatever was behind it (historically a roster fan-out) instead
+    // of the default noop. Fails loudly: any execute job on the queue proves a
+    // fan-out case exists again.
+    const q = new Queue(`atp-poller-cases-${Date.now()}`, { connection });
+    const w = new Worker(q.name, agentTriggerProcessor, { connection });
+    const jobs = [
+      await q.add("adaptive-polling", { poll: true }),
+      await q.add("reconciliation", { reconcile: true }),
+    ];
+    await poll(
+      () => Promise.all(jobs.map((j) => j.getState())),
+      (states) => states.every((s) => s === "completed"),
+      15_000,
+    );
+    const all = await q.getJobs(["completed", "failed", "waiting", "delayed", "active"]);
+    expect(all.filter((j) => j.name === "execute")).toHaveLength(0);
+    expect((await q.getJobCounts("failed")).failed ?? 0).toBe(0);
+    await w.close();
+    await q.close();
+  }, 20_000);
 });

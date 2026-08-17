@@ -141,4 +141,29 @@ describe("outbox relay", () => {
     const job = await emailJobs.getJob(`outbox-${row.id}`);
     expect(job?.data).toMatchObject(payload);
   });
+
+  test("a one_shot row (no agentId) is routed to agent-once and marked processed", async () => {
+    // Throwaway queue name: queues.test.ts's startWorkers() registers a worker on
+    // the real "agent-once" queue in the SAME test process, which would lock the
+    // job and race the cleanup below. A unique name has no consumer.
+    const onceJobs = new Queue(`once-${Date.now()}`, {
+      connection: { url: process.env.REDIS_URL, maxRetriesPerRequest: null },
+    });
+    const payload = { userId, conversationId: convId, content: "use the browser to check today's gold price" };
+    const row = await prisma.outboxEvent.create({
+      data: { eventType: "one_shot", payload },
+    });
+
+    const enqueued = await drainOutbox(agentJobs, emailJobs, onceJobs);
+
+    expect(enqueued).toBe(1);
+    await poll(
+      () => prisma.outboxEvent.findUnique({ where: { id: row.id } }),
+      (r) => r?.processedAt != null,
+    );
+    const job = await onceJobs.getJob(`outbox-${row.id}`);
+    expect(job?.data).toMatchObject(payload);
+    await job?.remove();
+    await onceJobs.close();
+  });
 });

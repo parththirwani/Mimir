@@ -29,7 +29,7 @@ await prisma.user.create({
   data: { id: userId, email: `${userId}@harness.local`, passwordHash: "x" },
 });
 
-const KNOWN: ClassificationAction[] = ["answer_directly", "spawn_agent", "manage_cancel", "manage_list", "ask_clarification"];
+const KNOWN: ClassificationAction[] = ["answer_directly", "spawn_agent", "one_shot", "manage_cancel", "manage_list", "ask_clarification"];
 
 function mapAction(a: string): ClassificationAction {
   if (KNOWN.includes(a as ClassificationAction)) return a as ClassificationAction;
@@ -142,8 +142,9 @@ const path = writeReport(report);
 console.log("\n" + renderReport(report));
 console.log(`\nWrote ${path}`);
 
+// Child rows first (ModelCallLog/AnalyticsEvent FK to User), then the user.
 await prisma.outboxEvent.deleteMany({ where: { payload: { path: ["userId"], equals: userId } } });
-await prisma.user.deleteMany({ where: { id: userId } });
 await prisma.modelCallLog.deleteMany({ where: { userId } });
 await prisma.analyticsEvent.deleteMany({ where: { userId } });
+await prisma.user.deleteMany({ where: { id: userId } });
 await prisma.$disconnect();

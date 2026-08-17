@@ -80,6 +80,15 @@ describe("ComposioConnectionProvider gmailRequest", () => {
     expect(headers).toEqual(["From", "Subject", "List-Unsubscribe", "In-Reply-To"]);
   });
 
+  test("a scalar q param serializes as a single proxy parameter (search)", async () => {
+    const p = provider(store({ connectionId: "ca-1", status: "connected" }));
+    await p.gmailRequest("user-1", "/gmail/v1/users/me/messages", {
+      query: { maxResults: 20, q: "from:openrouter" },
+    });
+    const q = proxyCall!.parameters!.filter((x) => x.name === "q");
+    expect(q).toEqual([{ in: "query", name: "q", value: "from:openrouter" }]);
+  });
+
   test("honours an explicit connectionId override (syncConnection heal probe)", async () => {
     const p = provider(store(null));
     await p.gmailRequest("user-1", "/gmail/v1/users/me/profile", { connectionId: "ca-found" });

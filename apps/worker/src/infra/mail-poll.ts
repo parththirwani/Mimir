@@ -38,12 +38,38 @@ async function markNoise(cache: Redis, userId: string, messageId: string, ttlSec
   }
 }
 
-function renderMail(m: GmailMessage): string {
+// The judge reads the same render as the user, minus the plumbing the user
+// never asked for: List-Unsubscribe/In-Reply-To stay for the filter's bulk-mailer
+// signal, but the surfaced message shows a human email preview instead.
+function renderMail(m: GmailMessage, opts?: { forUser?: boolean; timezone?: string | null }): string {
   const header: string[] = [];
-  if (m.listUnsubscribe) header.push(`List-Unsubscribe: ${m.listUnsubscribe}`);
-  if (m.inReplyTo) header.push(`In-Reply-To: ${m.inReplyTo}`);
+  if (!opts?.forUser) {
+    if (m.listUnsubscribe) header.push(`List-Unsubscribe: ${m.listUnsubscribe}`);
+    if (m.inReplyTo) header.push(`In-Reply-To: ${m.inReplyTo}`);
+  }
   const head = header.length ? `\n${header.join("\n")}` : "";
-  return `From: ${m.from}\nSubject: ${m.subject}\nReceived: ${m.receivedAt}${head}\n\n${m.body}`;
+  const received = opts?.forUser ? localizeReceived(m.receivedAt, opts.timezone) : m.receivedAt;
+  return `From: ${m.from}\nSubject: ${m.subject}\nReceived: ${received}${head}\n\n${m.body}`;
+}
+
+// User's IANA tz comes from their browser (POST /user/timezone). Unknown or
+// garbage tz falls back to the raw ISO string.
+// ponytail: only users who loaded the web chat have a tz set; anyone else (or a
+// bad value) keeps UTC. Upgrade: fall back to a server tz env var if users appear.
+function localizeReceived(iso: string, timezone?: string | null): string {
+  if (!iso || !timezone) return iso;
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(iso));
+  } catch {
+    return iso;
+  }
 }
 
 // find-or-create the user's single persistent conversation (mirrors message.ts):
@@ -88,12 +114,12 @@ export async function pollImportantMail(deps: MailPollDeps = {}): Promise<number
 
   const connections = await prisma.integrationConnection.findMany({
     where: { provider: GMAIL_INTEGRATION, status: "connected" },
-    select: { userId: true },
+    select: { userId: true, user: { select: { timezone: true } } },
   });
   if (connections.length === 0) return 0;
 
   let surfaced = 0;
-  for (const { userId } of connections) {
+  for (const { userId, user } of connections) {
     try {
       const data = await fetchData(userId, "gmail", "");
       const messages = data.messages ?? [];
@@ -132,7 +158,7 @@ export async function pollImportantMail(deps: MailPollDeps = {}): Promise<number
           data: {
             conversationId,
             role: "assistant",
-            content: `Important email:\n\n${renderMail(msg)}\n\n${verdict.rationale ?? ""}`.trim(),
+            content: `Important email:\n\n${renderMail(msg, { forUser: true, timezone: user?.timezone })}\n\n${verdict.rationale ?? ""}`.trim(),
             status: "complete",
           },
         });

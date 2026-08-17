@@ -7,13 +7,14 @@ import {
   getLogger,
   getPrismaClient,
   loadPrompt,
+  oneShotSystemPrompt,
   trackEvent,
   trackModelCall,
   rollDailyUsage,
 } from "@mimir/backend-core";
-import type { LlmTool, ToolCall } from "@mimir/backend-core";
-import type { LlmMessage } from "@mimir/shared-types";
-import { toLlmTool } from "@mimir/tasks";
+import type { LlmCallOptions, LlmTool, ToolCall } from "@mimir/backend-core";
+import type { ChatResult, LlmMessage } from "@mimir/shared-types";
+import { toLlmTool, type Task } from "@mimir/tasks";
 import { ConnectionError, GMAIL_INTEGRATION, ProviderError, ProviderErrorKind } from "@mimir/connection-provider";
 import type { Job } from "bullmq";
 import { fetchEntityData } from "../integrations/gmail/gmail.js";
@@ -183,35 +184,38 @@ export function userTriggered(trigger: string | undefined): boolean {
 
 // The execution agent's mid-completion tool roster (4.7.4 wait, 4.10 draft).
 // Registered integration Tasks (4.9) get appended here later; the two system
-// tools are terminal — calling one ends the turn.
-export const agentSystemTools: LlmTool[] = [
-  {
-    type: "function",
-    function: {
-      name: "wait",
-      description:
-        "Call this when this run's output is redundant or would be noise to the user — silently discard it. The run is logged as discarded but never surfaced.",
-      parameters: { type: "object", properties: {}, additionalProperties: false },
-    },
+// tools are terminal — calling one ends the turn. wait is also offered to
+// one-shot runs (executeOnce); draft is NOT — a draft's confirmation flow must
+// resolve back to an Agent, and a one-shot run has no Agent.
+export const waitSystemTool: LlmTool = {
+  type: "function",
+  function: {
+    name: "wait",
+    description:
+      "Call this when this run's output is redundant or would be noise to the user — silently discard it. The run is logged as discarded but never surfaced.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
   },
-  {
-    type: "function",
-    function: {
-      name: "draft",
-      description:
-        "Insert verbatim content (e.g. an email draft) into the conversation EXACTLY as written — no persona rewrite. The user must confirm before you act on it; you will be re-run with the confirmed draft as context.",
-      parameters: {
-        type: "object",
-        properties: {
-          content: { type: "string", description: "Full verbatim draft content to show the user." },
-          actionLabel: { type: "string", description: "What will happen on confirm (e.g. 'send this email')." },
-        },
-        required: ["content", "actionLabel"],
-        additionalProperties: false,
+};
+
+export const draftSystemTool: LlmTool = {
+  type: "function",
+  function: {
+    name: "draft",
+    description:
+      "Insert verbatim content (e.g. an email draft) into the conversation EXACTLY as written — no persona rewrite. The user must confirm before you act on it; you will be re-run with the confirmed draft as context.",
+    parameters: {
+      type: "object",
+      properties: {
+        content: { type: "string", description: "Full verbatim draft content to show the user." },
+        actionLabel: { type: "string", description: "What will happen on confirm (e.g. 'send this email')." },
       },
+      required: ["content", "actionLabel"],
+      additionalProperties: false,
     },
   },
-];
+};
+
+export const agentSystemTools: LlmTool[] = [waitSystemTool, draftSystemTool];
 
 export type AgentToolOutcome =
   | { outcome: "wait" }
@@ -219,16 +223,61 @@ export type AgentToolOutcome =
 
 // Cross-path surface dedup: webhook and poll can both wake the same agent to
 // re-fetch a mailbox that produced the same output. If the agent already
-// surfaced this exact content, a repeat is not surfaced again.
-export async function isDuplicateSurface(agentId: string, content: string): Promise<boolean> {
-  const last = await prisma.agentEvent.findFirst({
+// surfaced this content — EXACTLY or as a reworded near-duplicate (a re-run
+// regenerates the same answer with different phrasing, which a string compare
+// misses) — the repeat is not surfaced again. Compared against the last few
+// surfaced events so a genuinely new finding isn't blocked by an older one.
+//
+// ponytail: the original 0.85 token-overlap heuristic missed real rewordings —
+// the Aug 17 incident pairs measured 0.61-0.85 — so this delegates to a cheap
+// judge model. Upgrade path: a fine-tuned classifier once dedup volume
+// justifies the training effort.
+export function parseDedupVerdict(raw: string): boolean {
+  try {
+    const json = JSON.parse(raw.replace(/```json|```/g, "").trim()) as { duplicate?: unknown };
+    return json.duplicate === true;
+  } catch {
+    return false;
+  }
+}
+
+export async function isDuplicateSurface(
+  agentId: string,
+  content: string,
+  deps?: { caller?: LlmCaller },
+): Promise<boolean> {
+  const recent = await prisma.agentEvent.findMany({
     where: { agentId, eventType: "surfaced" },
     orderBy: { createdAt: "desc" },
+    take: 3,
     select: { payload: true },
   });
-  if (!last) return false;
-  const prev = (last.payload as { content?: unknown }).content;
-  return typeof prev === "string" && prev === content;
+  if (recent.length === 0) return false;
+
+  const prior = recent
+    .map((ev) => (ev.payload as { content?: unknown }).content)
+    .filter((c): c is string => typeof c === "string");
+  const agent = await prisma.agent.findUnique({ where: { id: agentId }, select: { userId: true } });
+
+  const messages: LlmMessage[] = [
+    { role: "system", content: loadPrompt("dedup_judgment.md") },
+    { role: "user", content: `Already surfaced:\n${prior.map((p) => `- ${p}`).join("\n")}\n\nNew finding:\n${content}` },
+  ];
+  const caller = deps?.caller ?? callOpenRouter;
+  let result;
+  try {
+    result = await caller(messages, { useCase: "dedup_judgment" });
+  } catch (e) {
+    getLogger().warn({ err: e, agentId }, "dedup judge call failed; surfacing (fail-open)");
+    if (agent) {
+      await trackModelCall({ userId: agent.userId, useCase: "dedup_judgment", error: (e as Error)?.message ?? String(e) });
+    }
+    return false;
+  }
+  if (agent) {
+    await trackModelCall({ userId: agent.userId, useCase: "dedup_judgment", result });
+  }
+  return parseDedupVerdict(result.content);
 }
 
 function parseToolArgs(toolCall: ToolCall): Record<string, unknown> {
@@ -316,6 +365,204 @@ export async function handleAgentTool(
   throw new Error(`unknown agent tool: ${name}`);
 }
 
+// The capped multi-turn tool loop (4.9): call the model, execute the tool calls
+// it makes (registered Tasks + system tools), and re-call with the accumulated
+// history. Shared by executeAgent (persistent Agent runs) and executeOnce
+// (one-shot runs with NO Agent row) so the loop is implemented once. Terminal
+// system tools (wait/draft) are delegated to onTerminalTool: the agent path
+// persists its AgentEvents/messages, the one-shot path discards silently.
+export type LlmCaller = (messages: LlmMessage[], options?: LlmCallOptions) => Promise<ChatResult>;
+
+export interface ToolLoopContext {
+  messages: LlmMessage[];
+  tools: LlmTool[];
+  userId: string;
+  availableTasks: Task[];
+  /** Present for Agent runs (scopes agent-owned tools like trigger CRUD); absent for one-shot. */
+  agentId?: string;
+}
+
+export type ToolLoopOutcome = { stopped: "wait" | "draft" } | { result: ChatResult };
+
+type TerminalToolHandler = (
+  name: string,
+  toolCall: ToolCall,
+  result: ChatResult,
+) => Promise<{ handled: true; stopped: "wait" | "draft" } | { handled: false }>;
+
+// Cap so a misbehaving model can't loop forever — a tool-call storm ends the run
+// and falls through to surfacing whatever the last turn produced.
+const MAX_TOOL_DEPTH = 4;
+
+export async function runToolLoop(
+  ctx: ToolLoopContext,
+  onTerminalTool: TerminalToolHandler,
+  caller: LlmCaller = callOpenRouter,
+): Promise<ToolLoopOutcome> {
+  const { messages, tools, userId, availableTasks, agentId } = ctx;
+  let result = await caller(messages, { useCase: "agent_execution", tools, toolChoice: "auto" });
+  await trackModelCall({ userId, useCase: "agent_execution", result });
+
+  for (let depth = 0; depth < MAX_TOOL_DEPTH && result.toolCalls?.length; depth++) {
+    const toolResults: LlmMessage[] = [];
+    for (const toolCall of result.toolCalls) {
+      const name = toolCall.function?.name ?? "";
+      if (name === "wait" || name === "draft") {
+        const terminal = await onTerminalTool(name, toolCall, result);
+        if (terminal.handled) return { stopped: terminal.stopped };
+        continue;
+      }
+      const task = availableTasks.find((t) => t.name === name);
+      if (!task) {
+        toolResults.push({ role: "tool", toolCallId: toolCall.id, content: JSON.stringify({ error: `unknown tool: ${name}` }) });
+        continue;
+      }
+      let output: unknown;
+      try {
+        const args = parseToolArgs(toolCall);
+        output = await task.execute(args, agentId ? { userId, agentId } : { userId });
+      } catch (e) {
+        output = { error: (e as Error)?.message ?? String(e) };
+      }
+      toolResults.push({ role: "tool", toolCallId: toolCall.id, content: JSON.stringify(output) });
+      getLogger().info({ agentId, tool: name }, "integration task executed");
+    }
+
+    messages.push({ role: "assistant", content: result.content, toolCalls: result.toolCalls });
+    messages.push(...toolResults);
+    result = await caller(messages, { useCase: "agent_execution", tools, toolChoice: "auto" });
+    await trackModelCall({ userId, useCase: "agent_execution", result });
+  }
+  await rollDailyUsage(userId, result.usage.totalTokens);
+  return { result };
+}
+
+// Deterministic idempotency key for a one-shot surfaced message. Both the retry
+// pre-check and the (conversationId, clientMessageId) unique constraint key on
+// it. The "one-shot:" prefix can never collide with a client-generated UUID
+// clientMessageId.
+export function oneShotMessageKey(jobId: string): string {
+  return `one-shot:${jobId}`;
+}
+
+// Deterministic idempotency key for an agent-run surfaced message (mirrors
+// oneShotMessageKey). Same contract: the retry pre-check and the
+// (conversationId, clientMessageId) unique constraint both key on it, and the
+// "agent:" prefix can never collide with a client-generated UUID.
+export function agentMessageKey(jobId: string): string {
+  return `agent:${jobId}`;
+}
+
+// Retry-safety check (the same scrutiny the original investigation applied to
+// executeAgent): a one-shot job runs under BullMQ's attempts:5 backoff, so a
+// crash after prisma.message.create but before the job resolves would re-run the
+// WHOLE tool loop and surface a SECOND answer. Short-circuit: if a prior attempt
+// already wrote this job's surfaced message, a retry returns immediately instead
+// of re-executing. Returns the message so the caller can re-publish a message
+// whose crash came before the socket push.
+export async function findOneShotSurfaced(conversationId: string, jobId: string): Promise<{ id: string } | null> {
+  return prisma.message.findFirst({
+    where: { conversationId, clientMessageId: oneShotMessageKey(jobId) },
+    select: { id: true },
+  });
+}
+
+// Retry-safety check for executeAgent (same scrutiny as findOneShotSurfaced): an
+// agent job runs under BullMQ retries, so a crash after the surfaced message
+// write but before the job resolves would re-run the whole tool loop and surface
+// a SECOND answer. Short-circuit: if a prior attempt already wrote this job's
+// surfaced message, the retry returns before re-executing.
+export async function findAgentSurfaced(conversationId: string, jobId: string): Promise<{ id: string } | null> {
+  return prisma.message.findFirst({
+    where: { conversationId, clientMessageId: agentMessageKey(jobId) },
+    select: { id: true },
+  });
+}
+
+export interface OneShotJobData {
+  userId: string;
+  conversationId: string;
+  content: string;
+}
+
+// The one-shot processor: a single tool-backed answer with NO Agent row — the
+// "one_shot" classification never spawns a persistent watch. Verification
+// criterion: this handler never reads or writes prisma.agent.
+export async function executeOnce(job: Job, opts?: { caller?: LlmCaller }): Promise<void> {
+  const { userId, conversationId, content } = job.data as OneShotJobData;
+  // BullMQ always assigns an id to a queued job; it types as optional.
+  const jobId = job.id ?? "";
+  const caller = opts?.caller ?? callOpenRouter;
+  getLogger().info({ conversationId, jobId }, "one-shot job started");
+
+  // Retry short-circuit: if a previous attempt already wrote the surfaced answer
+  // for this job (then crashed before resolving), don't re-run the tool loop.
+  const surfaced = await findOneShotSurfaced(conversationId, jobId);
+  if (surfaced) {
+    getLogger().info({ conversationId, jobId }, "one-shot already surfaced; skipping retry");
+    // The prior attempt may have crashed after writing the message but before the
+    // socket push — push again so the user actually sees it. The client replaces
+    // its full message list on new_message, so a redundant push is harmless.
+    try {
+      await publishUserEvent(userId, "new_message", { conversationId, messageId: surfaced.id });
+    } catch (e) {
+      getLogger().error({ err: e, conversationId, messageId: surfaced.id }, "re-publish failed on one-shot retry short-circuit");
+    }
+    return;
+  }
+
+  const messages: LlmMessage[] = [
+    { role: "system", content: oneShotSystemPrompt() },
+    { role: "user", content },
+  ];
+
+  // One-shot roster: browser/notion/gmail/MCP tasks + the wait escape hatch.
+  // No draft (its confirmation flow needs a resolvable Agent — see
+  // classification.md rule 13) and no trigger CRUD (agent-scoped).
+  const availableTasks = await agentTasksFor(userId, { includeTriggerTools: false });
+  const tools: LlmTool[] = [waitSystemTool, ...availableTasks.map((t) => toLlmTool(t))];
+
+  const outcome = await runToolLoop(
+    { messages, tools, userId, availableTasks },
+    async (name) => {
+      if (name !== "wait") return { handled: false };
+      getLogger().info({ conversationId, jobId }, "one-shot discarded via wait tool");
+      return { handled: true, stopped: "wait" as const };
+    },
+    caller,
+  );
+  if ("stopped" in outcome) return;
+  const result = outcome.result;
+
+  // Direct user ask — never gated by the noise filter (mirrors userTriggered on
+  // the agent path). The message write carries the job-scoped clientMessageId so
+  // a post-write crash stays idempotent on retry.
+  const framed = await frameResultForUser({ result: result.content, userMessage: content, userId, caller });
+  const message = await prisma.message.create({
+    data: {
+      conversationId,
+      role: "assistant",
+      content: framed,
+      status: "complete",
+      model: result.model,
+      tokenCount: result.usage.totalTokens,
+      promptTokens: result.usage.promptTokens,
+      completionTokens: result.usage.completionTokens,
+      durationMs: result.latencyMs,
+      clientMessageId: oneShotMessageKey(jobId),
+    },
+  });
+  await trackEvent(userId, "one_shot_surfaced", { conversationId, messageId: message.id });
+
+  // Publish only after the DB write committed; a publish failure must never flip
+  // a successful run to failed (the message is already written).
+  try {
+    await publishUserEvent(userId, "new_message", { conversationId, messageId: message.id });
+  } catch (e) {
+    getLogger().error({ err: e, conversationId }, "publish failed (one-shot message already written)");
+  }
+}
+
 export type FilterKind = "agent" | "email";
 
 // Agent results and incoming mail need different importance rubrics. A generic
@@ -367,8 +614,9 @@ function classifyProviderError(e: unknown): ProviderErrorKind | null {
 }
 
 // The agent-jobs processor. Postgres writes (AgentEvent + Message) complete
-// BEFORE any publish — no publish-before-write.
-export async function executeAgent(job: Job): Promise<void> {
+// BEFORE any publish — no publish-before-write. `caller` is injectable for
+// tests only (same pattern as executeOnce); production calls pass nothing.
+export async function executeAgent(job: Job, opts: { caller?: LlmCaller } = {}): Promise<void> {
   const { agentId, trigger, triggerId, context } = job.data as {
     agentId: string;
     trigger?: string;
@@ -380,6 +628,24 @@ export async function executeAgent(job: Job): Promise<void> {
   const agent = await prisma.agent.findUnique({ where: { id: agentId } });
   if (!agent) {
     getLogger().warn({ agentId }, "agent job for missing agent; skipping");
+    return;
+  }
+
+  // Retry short-circuit (the crash-after-write gap the one-shot path already
+  // covers): a previous attempt that wrote this job's surfaced message then
+  // crashed returns here instead of re-running the tool loop.
+  const jobId = job.id ?? "";
+  const surfaced = await findAgentSurfaced(agent.ownerConversationId, jobId);
+  if (surfaced) {
+    getLogger().info({ agentId, jobId }, "agent job already surfaced; skipping retry");
+    // The prior attempt may have crashed after writing the message but before the
+    // socket push — push again so the user actually sees it (the client replaces
+    // its full message list on new_message, so a redundant push is harmless).
+    try {
+      await publishUserEvent(agent.userId, "new_message", { conversationId: agent.ownerConversationId, messageId: surfaced.id });
+    } catch (e) {
+      getLogger().error({ err: e, agentId, messageId: surfaced.id }, "re-publish failed on agent retry short-circuit");
+    }
     return;
   }
 
@@ -487,54 +753,32 @@ export async function executeAgent(job: Job): Promise<void> {
     ...availableTasks.map((t) => toLlmTool(t)),
   ];
 
-  // Multi-turn tool loop (4.9): a terminal tool call (wait/draft) ends the run;
-  // a registered Task result is appended as a tool message and the model is
-  // re-called with the accumulated history. Capped so a misbehaving model can't
-  // loop forever — a tool-call storm ends the run and falls through to filtering.
-  const MAX_TOOL_DEPTH = 4;
-  let result = await callOpenRouter(llmMessages, { useCase: "agent_execution", tools, toolChoice: "auto" });
-  await trackModelCall({ userId: agent.userId, useCase: "agent_execution", result });
-
-  for (let depth = 0; depth < MAX_TOOL_DEPTH && result.toolCalls?.length; depth++) {
-    const toolResults: LlmMessage[] = [];
-    for (const toolCall of result.toolCalls) {
-      const name = toolCall.function?.name ?? "";
-      if (name === "wait" || name === "draft") {
-        const outcome = await handleAgentTool(agentId, agent.userId, agent.ownerConversationId, toolCall, result);
-        if (outcome.outcome === "wait") {
-          await trackEvent(agent.userId, "agent_event_discarded", { agentId, category: "wait_tool" });
-          await safeFold(agentId);
-          return;
-        }
-        if (outcome.outcome === "draft") {
-          getLogger().info({ agentId, messageId: outcome.messageId }, "agent draft inserted (pending confirmation)");
-          await safeFold(agentId);
-          return;
-        }
-        continue;
+  // Multi-turn tool loop (4.9) — shared with the one-shot path (executeOnce).
+  // A terminal tool call (wait/draft) ends the run; a registered Task result is
+  // appended as a tool message and the model is re-called with the accumulated
+  // history, capped by MAX_TOOL_DEPTH inside runToolLoop.
+  const outcome = await runToolLoop(
+    { messages: llmMessages, tools, userId: agent.userId, availableTasks, agentId },
+    async (name, toolCall, result) => {
+      if (name !== "wait" && name !== "draft") return { handled: false };
+      const terminal = await handleAgentTool(agentId, agent.userId, agent.ownerConversationId, toolCall, result);
+      if (terminal.outcome === "wait") return { handled: true, stopped: "wait" as const };
+      if (terminal.outcome === "draft") {
+        getLogger().info({ agentId, messageId: terminal.messageId }, "agent draft inserted (pending confirmation)");
+        return { handled: true, stopped: "draft" as const };
       }
-      const task = availableTasks.find((t) => t.name === name);
-      if (!task) {
-        toolResults.push({ role: "tool", toolCallId: toolCall.id, content: JSON.stringify({ error: `unknown tool: ${name}` }) });
-        continue;
-      }
-      let output: unknown;
-      try {
-        const args = parseToolArgs(toolCall);
-        output = await task.execute(args, { userId: agent.userId, agentId });
-      } catch (e) {
-        output = { error: (e as Error)?.message ?? String(e) };
-      }
-      toolResults.push({ role: "tool", toolCallId: toolCall.id, content: JSON.stringify(output) });
-      getLogger().info({ agentId, tool: name }, "agent integration task executed");
+      return { handled: false };
+    },
+    opts.caller,
+  );
+  if ("stopped" in outcome) {
+    if (outcome.stopped === "wait") {
+      await trackEvent(agent.userId, "agent_event_discarded", { agentId, category: "wait_tool" });
     }
-
-    llmMessages.push({ role: "assistant", content: result.content, toolCalls: result.toolCalls });
-    llmMessages.push(...toolResults);
-    result = await callOpenRouter(llmMessages, { useCase: "agent_execution", tools, toolChoice: "auto" });
-    await trackModelCall({ userId: agent.userId, useCase: "agent_execution", result });
+    await safeFold(agentId);
+    return;
   }
-  await rollDailyUsage(agent.userId, result.usage.totalTokens);
+  const result = outcome.result;
 
   await prisma.agent.update({ where: { id: agentId }, data: { lastActiveAt: new Date() } });
 
@@ -547,8 +791,13 @@ export async function executeAgent(job: Job): Promise<void> {
   // Cross-path dedup (6.x): webhook push AND adaptive poll can both wake the same
   // agent to re-fetch the same mailbox and both decide to surface the SAME
   // output. A duplicate is downgraded to `discarded` so the user isn't shown the
-  // same message twice.
-  const duplicate = verdict.surface && (await isDuplicateSurface(agentId, result.content));
+  // same message twice. Only the background paths dedup: a direct user request
+  // always surfaces, even if it rewords an earlier result — silently dropping an
+  // explicit answer would be worse than a repeat.
+  const duplicate =
+    !userTriggered(trigger) &&
+    verdict.surface &&
+    (await isDuplicateSurface(agentId, result.content, opts.caller ? { caller: opts.caller } : undefined));
   const verdict2 = duplicate
     ? { surface: false, rationale: "duplicate of an already-surfaced result", category: "noise" as const, error: false }
     : verdict;
@@ -580,7 +829,11 @@ export async function executeAgent(job: Job): Promise<void> {
   // by the interaction-agent persona so internal agents/integrations/tools never
   // leak into chat (4.x execution -> Mimir -> user hop). Best-effort: if framing
   // fails, the raw result surfaces rather than dropping the message.
-  const framed = await frameResultForUser({ result: result.content, userMessage: context ?? "" });
+  const framed = await frameResultForUser({
+    result: result.content,
+    userMessage: context ?? "",
+    ...(opts.caller ? { caller: opts.caller } : {}),
+  });
   const message = await prisma.message.create({
     data: {
       conversationId: agent.ownerConversationId,
@@ -592,6 +845,7 @@ export async function executeAgent(job: Job): Promise<void> {
       promptTokens: result.usage.promptTokens,
       completionTokens: result.usage.completionTokens,
       durationMs: result.latencyMs,
+      clientMessageId: agentMessageKey(jobId),
     },
   });
   await trackEvent(agent.userId, "agent_event_surfaced", { agentId, conversationId: agent.ownerConversationId });

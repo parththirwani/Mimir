@@ -1,6 +1,8 @@
 import { getConfig, getPrismaClient } from "@mimir/backend-core";
 import { ConnectionError, ProviderError, gmailProvider } from "@mimir/connection-provider";
 import type { GmailRequestOptions, GmailRequestResult } from "@mimir/connection-provider";
+import { ToolError, type Task } from "@mimir/tasks";
+import { z } from "zod";
 
 const prisma = getPrismaClient();
 
@@ -40,16 +42,29 @@ export async function fetchEntityData(userId: string, entity: string | null, tas
   return { provider: "gmail", messages: await fetchGmailMessages(transport) };
 }
 
+export interface FetchGmailOptions {
+  // Gmail search query (the API's `q` param), e.g. "from:openrouter.com". Absent
+  // => recent-mail list, not a search.
+  query?: string;
+  maxResults?: number;
+}
+
 // Split from fetchEntityData so the REST layer is unit-testable with a mocked
 // transport — no live Nango/Composio/Google account required.
-export async function fetchGmailMessages(transport: GmailTransport): Promise<GmailMessage[]> {
+export async function fetchGmailMessages(transport: GmailTransport, opts: FetchGmailOptions = {}): Promise<GmailMessage[]> {
   const list = await gmailRpc<GmailListResponse>(transport, "/gmail/v1/users/me/messages", {
-    query: { maxResults: 10 },
+    query: {
+      maxResults: opts.maxResults ?? 10,
+      ...(opts.query ? { q: opts.query } : {}),
+    },
   });
   const messages: GmailMessage[] = [];
   for (const row of list.messages ?? []) {
     const detail = await gmailRpc<GmailDetailResponse>(transport, `/gmail/v1/users/me/messages/${row.id}`, {
-      query: { format: "metadata", metadataHeaders: ["From", "Subject", "List-Unsubscribe", "In-Reply-To"] },
+      // ponytail: format=metadata with no metadataHeaders makes Gmail return ALL
+      // headers. The repeated metadataHeaders param (a 4-key subset) was collapsing
+      // in Composio's proxy, blanking From/Subject. Single-param path only.
+      query: { format: "metadata" },
     });
     const listUnsubscribe = headerValue(detail.payload, "List-Unsubscribe");
     const inReplyTo = headerValue(detail.payload, "In-Reply-To");
@@ -64,6 +79,38 @@ export async function fetchGmailMessages(transport: GmailTransport): Promise<Gma
     });
   }
   return messages;
+}
+
+// Composite Task (4.9.2): one aggregated "search my Gmail" result from a real
+// Gmail query — the Execution Agent translates its ask into Gmail search syntax
+// (from:/subject:/keyword) and this hits messages.list?q=... for real matches.
+export function gmailSearchTask(): Task {
+  return {
+    kind: "task",
+    name: "search_email",
+    description:
+      "Search the user's Gmail for messages matching a Gmail search query (e.g. 'from:openrouter.com', 'subject:invoice', 'has:attachment'). Returns real matches from Gmail's search API with sender and subject. Use this to answer whether specific mail exists — never conclude absence from the injected recent-mail list.",
+    inputSchema: z.object({
+      query: z.string().describe("Gmail search query, e.g. 'from:openrouter.com' or 'subject:invoice'"),
+    }),
+    execute: async (input, ctx) => {
+      const { query } = input as { query: string };
+      if (!query?.trim()) throw new ToolError("validation", "search_email requires a query");
+      const cfg = getConfig();
+      const provider = gmailProvider(cfg, prisma.integrationConnection, `${cfg.PUBLIC_API_URL ?? cfg.WEB_APP_URL ?? ""}/api/v1/integrations/gmail/callback`);
+      const transport: GmailTransport = (path, opts) => provider.gmailRequest(ctx.userId, path, opts);
+      try {
+        // ponytail: single Gmail q call, no time-window fan-out — Gmail searches the
+        // whole mailbox server-side. Fan out only if a single q can't express a
+        // multi-window intent.
+        return { provider: "gmail", query, messages: await fetchGmailMessages(transport, { query, maxResults: 20 }) };
+      } catch (e) {
+        if (e instanceof ConnectionError) throw new ToolError("connection", e.message);
+        if (e instanceof ProviderError) throw new ToolError("execution", e.message);
+        throw e;
+      }
+    },
+  };
 }
 
 export interface GmailWatchResult {

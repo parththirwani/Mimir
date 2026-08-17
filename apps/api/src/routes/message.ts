@@ -602,6 +602,30 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     return;
   }
 
+  // --- One-time tool-backed answer (no Agent row) ---
+  // A single-turn live lookup ("use the browser to check the gold price") is
+  // delegated to the agent-once queue — the worker answers with the tools and
+  // creates NO Agent. The rewritten query (anaphora resolved) is what runs.
+  if (classification.action === "one_shot") {
+    await trackEvent(userId, "agent_one_shot_classified", { conversationId, confidence: classification.confidence });
+    await prisma.outboxEvent.create({
+      data: {
+        eventType: "one_shot",
+        payload: { userId, conversationId, content: rewritten },
+      },
+    });
+    getLogger().info({ conversationId }, "one-shot query delegated via outbox");
+    const ack = await writeAck({
+      userId,
+      conversationId,
+      parentMessageId: userMsg.id,
+      kind: "one_shot",
+      context: rewritten,
+    });
+    res.status(200).json(ack);
+    return;
+  }
+
   if (classification.action === "spawn_agent" && classification.taskDescription) {
     await trackEvent(userId, "agent_spawn_classified", {
       conversationId,

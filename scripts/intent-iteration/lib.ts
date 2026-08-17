@@ -4,11 +4,13 @@ import { join } from "node:path";
 export type HarnessMode = "classify" | "e2e";
 
 // Low-level actions the classifier may emit. The API maps these to concrete
-// work (spawn -> execution agent, manage_cancel -> archive + disable triggers,
-// manage_list -> list, ask_clarification -> clarify without creating state).
+// work (spawn -> execution agent, one_shot -> one-time tool answer with no
+// Agent, manage_cancel -> archive + disable triggers, manage_list -> list,
+// ask_clarification -> clarify without creating state).
 export type ClassificationAction =
   | "answer_directly"
   | "spawn_agent"
+  | "one_shot"
   | "manage_cancel"
   | "manage_list"
   | "ask_clarification";
@@ -206,7 +208,7 @@ export function classifyPassed(e: CorpusEntry, c: ClassifyResult): boolean {
     }
   }
   // Sanity: action must be one of the known set (guards against parse drift).
-  if (!["answer_directly", "spawn_agent", "manage_cancel", "manage_list", "ask_clarification"].includes(c.actualAction)) {
+  if (!["answer_directly", "spawn_agent", "one_shot", "manage_cancel", "manage_list", "ask_clarification"].includes(c.actualAction)) {
     ok = false;
     reasons.push(`unknown action ${c.actualAction}`);
   }

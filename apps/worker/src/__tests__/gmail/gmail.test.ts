@@ -15,7 +15,9 @@ const {
   createGmailDraft,
   sendGmailDraft,
   getGmailProfile,
+  gmailSearchTask,
 } = await import("../../integrations/gmail/gmail.js");
+const { toLlmTool } = await import("@mimir/tasks");
 
 const prisma = getPrismaClient();
 const userId = `gmail-test-${randomUUID()}`;
@@ -107,6 +109,35 @@ describe("fetchGmailMessages (canned Gmail JSON via stub transport)", () => {
     expect(msg!.inReplyTo).toBeUndefined();
   });
 
+  test("a query passes through as Gmail's q param on the list call", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const transport: GmailTransport = async (path, opts) => {
+      seen.push({ path, ...opts?.query });
+      if (path === "/gmail/v1/users/me/messages")
+        return Promise.resolve({ status: 200, data: { messages: [{ id: "msg-1" }] } });
+      return Promise.resolve({ status: 200, data: cannedDetail("msg-1") });
+    };
+
+    await fetchGmailMessages(transport, { query: "from:openrouter", maxResults: 20 });
+    expect(seen[0]).toEqual({ path: "/gmail/v1/users/me/messages", maxResults: 20, q: "from:openrouter" });
+  });
+
+  test("detail fetches use format=metadata with NO metadataHeaders (repeated params collapse in the proxy)", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const transport: GmailTransport = async (path, opts) => {
+      seen.push({ path, ...opts?.query });
+      if (path === "/gmail/v1/users/me/messages")
+        return Promise.resolve({ status: 200, data: { messages: [{ id: "msg-1" }] } });
+      return Promise.resolve({ status: 200, data: cannedDetail("msg-1") });
+    };
+
+    const [msg] = await fetchGmailMessages(transport);
+    const detail = seen.find((s) => s.path !== "/gmail/v1/users/me/messages");
+    expect(detail).toEqual({ path: "/gmail/v1/users/me/messages/msg-1", format: "metadata" });
+    expect(msg!.from).toBe("Alice Johnson <alice@example.com>");
+    expect(msg!.subject).toBe("Project update");
+  });
+
   test("401 -> ConnectionError(expired)", async () => {
     const transport: GmailTransport = async () => ({ status: 401, data: { error: "unauthorized" } });
     expect(fetchGmailMessages(transport)).rejects.toThrow(ConnectionError);
@@ -117,6 +148,26 @@ describe("fetchGmailMessages (canned Gmail JSON via stub transport)", () => {
     const transport: GmailTransport = async () => ({ status: 429, data: { error: "rate" } });
     expect(fetchGmailMessages(transport)).rejects.toThrow(ProviderError);
     expect(fetchGmailMessages(transport)).rejects.toMatchObject({ kind: "rate_limited" });
+  });
+});
+
+describe("gmailSearchTask (search_email tool schema)", () => {
+  test("advertises targeted Gmail query support to the LLM (schema + description)", () => {
+    const tool = toLlmTool(gmailSearchTask());
+    expect(tool.function.name).toBe("search_email");
+    expect(tool.function.description).toMatch(/Gmail search query/);
+    expect(tool.function.description).toMatch(/from:/);
+    expect(tool.function.parameters).toMatchObject({
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+    });
+  });
+
+  test("rejects an empty query", async () => {
+    await expect(gmailSearchTask().execute({ query: "" }, { userId: "u" })).rejects.toMatchObject({
+      kind: "validation",
+    });
   });
 });
 

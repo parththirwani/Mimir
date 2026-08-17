@@ -6,7 +6,7 @@ process.env.REDIS_URL = "redis://localhost:6379";
 process.env.JWT_SECRET = "agent-test-secret";
 
 const { getPrismaClient } = await import("@mimir/backend-core");
-const { ANSWER_DIRECTLY, archiveAgents, findDuplicateByVector, parseClassification, parseRewrite, rewriteHistoryContext } = await import("../agent/agent.js");
+const { ANSWER_DIRECTLY, archiveAgents, findDuplicateByVector, isPureGreeting, parseClassification, parseRewrite, rewriteHistoryContext } = await import("../agent/agent.js");
 
 const prisma = getPrismaClient();
 
@@ -56,6 +56,31 @@ describe("parseClassification", () => {
     expect(parseClassification('{"action":"ask_clarification","confidence":0.7}').action).toBe("ask_clarification");
   });
 
+  test("one_shot is accepted with no targetAgentId (one-time run, not a spawn)", () => {
+    const c = parseClassification('{"action":"one_shot","confidence":0.85}');
+    expect(c.action).toBe("one_shot");
+    expect(c.targetAgentId).toBeUndefined();
+  });
+
+  test("one_shot strips any bogus targetAgentId (never retargets an agent)", () => {
+    const c = parseClassification('{"action":"one_shot","targetAgentId":"agent-2026","confidence":0.9}');
+    expect(c.action).toBe("one_shot");
+    expect(c.targetAgentId).toBeUndefined();
+  });
+
+  test("one_shot with confidence below 0.5 forces answer_directly (no tool delegation on a guess)", () => {
+    expect(parseClassification('{"action":"one_shot","confidence":0.4}')).toEqual(ANSWER_DIRECTLY);
+  });
+
+  test("ask_clarification with confidence below 0.5 forces answer_directly (spec 4.2.2)", () => {
+    expect(parseClassification('{"action":"ask_clarification","confidence":0.4}')).toEqual(ANSWER_DIRECTLY);
+    expect(parseClassification('{"action":"ask_clarification","confidence":0.0}')).toEqual(ANSWER_DIRECTLY);
+  });
+
+  test("ask_clarification at exactly 0.5 is accepted", () => {
+    expect(parseClassification('{"action":"ask_clarification","confidence":0.5}').action).toBe("ask_clarification");
+  });
+
   test("unknown action falls back to answer_directly", () => {
     expect(parseClassification('{"action":"fly_to_moon","confidence":0.9}')).toEqual(ANSWER_DIRECTLY);
   });
@@ -87,6 +112,25 @@ describe("rewrite stage (context resolution)", () => {
 
   test("rewriteHistoryContext returns a sentinel for empty history", () => {
     expect(rewriteHistoryContext([])).toBe("(no prior conversation)");
+  });
+});
+
+describe("isPureGreeting (rewrite guard)", () => {
+  test("bare greetings are detected", () => {
+    expect(isPureGreeting("yo yo wassup")).toBe(true);
+    expect(isPureGreeting("hey")).toBe(true);
+    expect(isPureGreeting("sup")).toBe(true);
+    expect(isPureGreeting("what's up")).toBe(true);
+    expect(isPureGreeting("hi how are you")).toBe(true);
+    expect(isPureGreeting("good morning")).toBe(true);
+  });
+
+  test("messages with actionable content are not treated as greetings", () => {
+    expect(isPureGreeting("yo yo wassup, can you look up the bitcoin price?")).toBe(false);
+    expect(isPureGreeting("hey watch my inbox for alice")).toBe(false);
+    expect(isPureGreeting("what's up with my 2026 watch")).toBe(false);
+    expect(isPureGreeting("ok")).toBe(false);
+    expect(isPureGreeting("")).toBe(false);
   });
 });
 

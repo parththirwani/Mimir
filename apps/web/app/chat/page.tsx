@@ -116,6 +116,17 @@ export default function ChatPage() {
   }, [refreshThread]);
 
   useEffect(() => {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (!timeZone) return;
+    fetch(`${API}/user/timezone`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ timeZone }),
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
     if (view !== "chat") return;
     refreshGmailStatus();
   }, [view, refreshGmailStatus]);

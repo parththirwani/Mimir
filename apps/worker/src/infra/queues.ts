@@ -1,10 +1,9 @@
 import { getConfig, getLogger, MAIL_POLL_CRON, runWithContext } from "@mimir/backend-core";
 import { Queue, Worker, type Job, type JobsOptions } from "bullmq";
-import { executeAgent } from "../agent/agent-execution.js";
+import { executeAgent, executeOnce } from "../agent/agent-execution.js";
 import { runDormancySweep } from "../agent/dormancy.js";
 import { sendEmailJob } from "../email/email-send-job.js";
 import { pollImportantMail } from "./mail-poll.js";
-import { runAdaptivePolling, ADAPTIVE_POLL_CRON, RECONCILE_CRON } from "./event-polling.js";
 import { runTriggerSweep, TRIGGER_TICK_CRON } from "../agent/triggers.js";
 import { runWatchRenewal } from "../integrations/gmail/watch-renewal.js";
 import { runConnectionCanary } from "../integrations/connection-canary.js";
@@ -12,6 +11,7 @@ import { runConnectionCanary } from "../integrations/connection-canary.js";
 // ponytail: queue name constants live in worker until a producer needs them
 // elsewhere; move to @mimir/backend-core then.
 export const AGENT_JOBS = "agent-jobs";
+export const AGENT_ONCE = "agent-once";
 export const AGENT_TRIGGERS = "agent-triggers";
 export const WEBHOOK_PROCESSING = "webhook-processing";
 export const FAILED_AGENT_JOBS = "failed-agent-jobs";
@@ -26,6 +26,7 @@ export const retryPolicy: JobsOptions = {
 };
 
 export const agentJobs = new Queue(AGENT_JOBS, { connection });
+export const onceJobs = new Queue(AGENT_ONCE, { connection });
 export const agentTriggers = new Queue(AGENT_TRIGGERS, { connection });
 export const webhookProcessing = new Queue(WEBHOOK_PROCESSING, { connection });
 export const failedAgentJobs = new Queue(FAILED_AGENT_JOBS, { connection });
@@ -69,25 +70,6 @@ export async function scheduleTriggerTick(): Promise<void> {
   );
 }
 
-// 1-min adaptive per-connection polling tick (6.4.1).
-export async function scheduleAdaptivePolling(): Promise<void> {
-  await agentTriggers.upsertJobScheduler(
-    "adaptive-polling",
-    { pattern: ADAPTIVE_POLL_CRON, immediately: false },
-    { name: "adaptive-polling", data: { poll: true } },
-  );
-}
-
-// 30-min reconciliation backstop (6.3): forces a poll of every connection even
-// if its own interval isn't due (safety net for missed webhook deliveries).
-export async function scheduleReconciliation(): Promise<void> {
-  await agentTriggers.upsertJobScheduler(
-    "reconciliation",
-    { pattern: RECONCILE_CRON, immediately: false },
-    { name: "reconciliation", data: { reconcile: true } },
-  );
-}
-
 // Daily gmail watch renewal sweep (6.2.2) — re-registers watches nearing expiry.
 export async function scheduleWatchRenewal(): Promise<void> {
   await agentTriggers.upsertJobScheduler(
@@ -110,6 +92,12 @@ export async function scheduleConnectionCanary(): Promise<void> {
 // agent-triggers processor: dormancy + mail-poll sweeps are the only real jobs.
 // Exported so tests can exercise it on a throwaway queue (the real
 // agent-triggers queue may be consumed by a live dev worker during tests).
+//
+// ponytail: reactivation is message-or-trigger only. There is deliberately NO
+// generic "poll every active agent" path here — polling is connection-scoped
+// (mail-poll.ts, which never enqueues an Agent row) and a fan-out over
+// Agent.entity re-surfaces finished tasks forever. A watch that needs
+// clock-driven checks is a per-connection monitor, not an agent fan-out.
 export async function agentTriggerProcessor(job: Job): Promise<void> {
   switch (job.name) {
     case "dormancy-sweep":
@@ -120,12 +108,6 @@ export async function agentTriggerProcessor(job: Job): Promise<void> {
       return;
     case "trigger-tick":
       await runTriggerSweep();
-      return;
-    case "adaptive-polling":
-      await runAdaptivePolling();
-      return;
-    case "reconciliation":
-      await runAdaptivePolling({ force: true });
       return;
     case "watch-renewal":
       await runWatchRenewal();
@@ -157,6 +139,7 @@ export function wireDlq<D, R, N extends string>(worker: Worker<D, R, N>): void {
 export function startWorkers(): Worker[] {
   const registrations: Array<[Queue, (job: Job) => Promise<unknown>, { concurrency?: number }]> = [
     [agentJobs, executeAgent, { concurrency: 10 }],
+    [onceJobs, executeOnce, { concurrency: 10 }],
     [agentTriggers, agentTriggerProcessor, { concurrency: 20 }],
     [webhookProcessing, noop, {}],
     [emailJobs, sendEmailJob, { concurrency: 5 }],

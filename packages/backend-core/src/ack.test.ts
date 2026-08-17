@@ -18,7 +18,7 @@ const { ACK_FALLBACKS, generateAck } = await import("./ack.js");
 
 describe("ack generation", () => {
   test("every kind has a fallback line", () => {
-    const kinds = ["draft", "send", "spawn", "retarget", "agent_draft_confirm", "send_result", "send_failed"];
+    const kinds = ["draft", "send", "spawn", "one_shot", "retarget", "agent_draft_confirm", "send_result", "send_failed"];
     for (const kind of kinds) {
       expect(ACK_FALLBACKS[kind as keyof typeof ACK_FALLBACKS]).toBeTruthy();
     }

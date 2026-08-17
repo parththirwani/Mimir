@@ -12,11 +12,19 @@ const prisma = getPrismaClient();
 // trigger:"trigger_fired"; the owning agent then RE-CHECKS the criteria at fire
 // time (4.11.6) before acting. Mismatches there are logged but never surfaced.
 
-// ponytail: every-trigger-every-minute is the plan's v1 and is deliberately
-// coarse. It re-fetches integration data per trigger per tick — cheap now, but a
-// per-trigger cooldown or `schedule` cadence is the known ceiling once volume
-// bites. No cooldown until then.
+// ponytail: every-trigger-every-minute is the plan's v1. A matching trigger used
+// to re-fire on every tick for as long as its criteria held (the Aug 17
+// duplicate-flood incident). Now gated by TRIGGER_COOLDOWN_MS on the already-
+// stamped lastFiredAt. The remaining ceiling: the sweep re-fetches integration
+// data per trigger per tick — cheap now, but a per-trigger `schedule` cadence is
+// the upgrade path once volume bites. Cooldown moved to config.schema.ts if it
+// ever needs to vary per deployment.
 export const TRIGGER_TICK_CRON = "* * * * *";
+
+// Minimum gap between consecutive fires of the same trigger. Cooldown beats a
+// "did we already surface this?" check on the agent side: it short-circuits
+// BEFORE the judge runs, saving a model call per cooled trigger.
+export const TRIGGER_COOLDOWN_MS = 15 * 60 * 1000;
 
 // `evaluate`/`queue` are injectable so tests can hand in a fake judge and a
 // throwaway queue (the shared agent-jobs queue may be consumed by a live dev
@@ -28,6 +36,7 @@ export async function runTriggerSweep(deps: { evaluate?: typeof evaluateTrigger;
   let fired = 0;
   for (const trigger of triggers) {
     try {
+      if (trigger.lastFiredAt && Date.now() - trigger.lastFiredAt.getTime() < TRIGGER_COOLDOWN_MS) continue;
       const verdict = await judge({
         userId: trigger.agent.userId,
         agentId: trigger.agent.id,

@@ -69,6 +69,21 @@ export function executionSystemPrompt(opts: {
     .join("\n\n");
 }
 
+// One-shot execution (worker): a single tool-backed answer with NO persistent
+// Agent. Same factual-only guard as the agent path; the persona + no-persistence
+// contract come from one_shot.md. UseCase for the LLM call stays
+// "agent_execution" so deployments don't need a new model-config entry.
+export function oneShotSystemPrompt(): string {
+  return [
+    loadPrompt("execution_engine.md"),
+    loadPrompt("one_shot.md"),
+    "You receive the user's query. Produce a concise, useful answer for Mimir.",
+    loadPrompt("execution_facts.md"),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 // Format the raw execution result into a user-facing message (the missing
 // "execution -> Mimir -> user" hop). The raw result is never shown verbatim; the
 // interaction-agent persona composes the reply so internal agents/integrations/

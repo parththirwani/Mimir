@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { Redis } from "ioredis";
 
@@ -14,6 +14,8 @@ import type { MailPollDeps } from "../infra/mail-poll.js";
 const prisma = getPrismaClient();
 const userId = `mail-poll-${randomUUID()}`;
 const email = `${userId}@test.local`;
+const tzUserId = `mail-poll-tz-${randomUUID()}`;
+const tzEmail = `${tzUserId}@test.local`;
 
 // SurfacedMail is keyed on a GLOBAL messageId PK — real Gmail ids are globally
 // unique, but tests must be too or a row left by an earlier run permanently
@@ -25,12 +27,25 @@ const M3 = mid();
 const M4 = mid();
 const M5 = mid();
 
+// The mail-poll path is connection-scoped and MUST NEVER enqueue an Agent job —
+// that fan-out over the roster is exactly the deleted poller's bug. Assert on
+// the real agent-jobs queue that no job is added while mail is being surfaced.
+const M6 = mid();
+
 const msg = (id: string, subject: string) => ({
   id,
   from: "Alice <alice@example.com>",
   subject,
   body: "quick check-in",
   receivedAt: "2024-08-02T12:00:00.000Z",
+});
+
+// A mail carrying bulk-mailer plumbing headers — the judge sees them, the
+// surfaced user message must not, and the Received time localizes to the user's tz.
+const msgWithHeaders = (id: string, subject: string) => ({
+  ...msg(id, subject),
+  listUnsubscribe: "https://unsub.example.com/x",
+  inReplyTo: "<abc@mail.gmail.com>",
 });
 
 // In-memory Redis subset so the noise-cooldown tests are deterministic and
@@ -74,6 +89,11 @@ beforeAll(async () => {
     data: { userId, provider: GMAIL_INTEGRATION, connectionId: `nango-${userId}`, status: "connected" },
   });
   await prisma.conversation.create({ data: { userId } });
+  await prisma.user.create({ data: { id: tzUserId, email: tzEmail, passwordHash: "x", timezone: "America/New_York" } });
+  await prisma.integrationConnection.create({
+    data: { userId: tzUserId, provider: GMAIL_INTEGRATION, connectionId: `nango-${tzUserId}`, status: "connected" },
+  });
+  await prisma.conversation.create({ data: { userId: tzUserId } });
 });
 
 afterAll(async () => {
@@ -82,6 +102,11 @@ afterAll(async () => {
   await prisma.conversation.deleteMany({ where: { userId } });
   await prisma.surfacedMail.deleteMany({ where: { userId } });
   await prisma.user.delete({ where: { id: userId } });
+  await prisma.message.deleteMany({ where: { conversation: { userId: tzUserId } } });
+  await prisma.integrationConnection.deleteMany({ where: { userId: tzUserId } });
+  await prisma.conversation.deleteMany({ where: { userId: tzUserId } });
+  await prisma.surfacedMail.deleteMany({ where: { userId: tzUserId } });
+  await prisma.user.delete({ where: { id: tzUserId } });
 });
 
 describe("pollImportantMail (lazy sweep)", () => {
@@ -161,5 +186,53 @@ describe("pollImportantMail (lazy sweep)", () => {
     );
     expect(surfaced).toBe(1);
     expect(kinds).toEqual(["email"]);
+  });
+
+  test("judge sees the plumbing headers; the surfaced message drops them and localizes the time", async () => {
+    const M7 = mid();
+    const judged: string[] = [];
+    const deps: MailPollDeps = {
+      fetch: async (forUserId: string) =>
+        forUserId === tzUserId
+          ? { provider: "gmail", messages: [msgWithHeaders(M7, "Hritik messaged you")] }
+          : { provider: "gmail", messages: [] },
+      cache: fakeCache(),
+      filter: async (_userId, content) => {
+        judged.push(content);
+        return { surface: true, rationale: "urgent", category: "actionable" as const };
+      },
+      publish: async () => {},
+    };
+    const surfaced = await pollImportantMail(deps);
+    expect(surfaced).toBe(1);
+
+    // The judge's copy still carries the bulk-mailer signal headers.
+    expect(judged[0]).toContain("List-Unsubscribe: https://unsub.example.com/x");
+    expect(judged[0]).toContain("In-Reply-To: <abc@mail.gmail.com>");
+    expect(judged[0]).toContain("Received: 2024-08-02T12:00:00.000Z");
+
+    const messages = await prisma.message.findMany({
+      where: { conversation: { userId: tzUserId }, role: "assistant" },
+    });
+    const content = messages[0]?.content ?? "";
+    // 2024-08-02T12:00:00Z is 8:00 AM in America/New_York (EDT).
+    expect(content).toContain("Received: Aug 2, 2024, 8:00 AM");
+    expect(content).not.toContain("List-Unsubscribe");
+    expect(content).not.toContain("In-Reply-To");
+    expect(content).not.toContain("2024-08-02T12:00:00.000Z");
+  });
+
+  test("polling mail NEVER enqueues an agent job (connection-scoped, not roster-scoped)", async () => {
+    const { agentJobs } = await import("../infra/queues.js");
+    const addSpy = spyOn(agentJobs, "add");
+    try {
+      const surfaced = await pollImportantMail(mailDeps([msg(M6, "URGENT reply")]));
+      expect(surfaced).toBe(1);
+      // Zero agent-jobs enqueues across the whole run — the dedup + surface
+      // worked purely on SurfacedMail + messages, never touching the roster.
+      expect(addSpy.mock.calls).toHaveLength(0);
+    } finally {
+      addSpy.mockRestore();
+    }
   });
 });
