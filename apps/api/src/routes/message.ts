@@ -607,11 +607,11 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
   // delegated to the agent-once queue — the worker answers with the tools and
   // creates NO Agent. The rewritten query (anaphora resolved) is what runs.
   if (classification.action === "one_shot") {
-    await trackEvent(userId, "agent_one_shot_classified", { conversationId, confidence: classification.confidence });
+    await trackEvent(userId, "agent_one_shot_classified", { conversationId, confidence: classification.confidence, complexity: classification.complexity });
     await prisma.outboxEvent.create({
       data: {
         eventType: "one_shot",
-        payload: { userId, conversationId, content: rewritten },
+        payload: { userId, conversationId, content: rewritten, complexity: classification.complexity },
       },
     });
     getLogger().info({ conversationId }, "one-shot query delegated via outbox");
@@ -707,6 +707,7 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       taskDescription: classification.taskDescription,
       embedding,
       context: content,
+      complexity: classification.complexity,
     });
     await trackEvent(userId, "agent_spawned", { conversationId, agentId });
     // Cheap-model trigger extraction (4.11): an implicit "watch-for" condition

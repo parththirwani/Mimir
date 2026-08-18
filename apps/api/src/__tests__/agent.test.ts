@@ -6,14 +6,29 @@ process.env.REDIS_URL = "redis://localhost:6379";
 process.env.JWT_SECRET = "agent-test-secret";
 
 const { getPrismaClient } = await import("@mimir/backend-core");
-const { ANSWER_DIRECTLY, archiveAgents, findDuplicateByVector, isPureGreeting, parseClassification, parseRewrite, rewriteHistoryContext } = await import("../agent/agent.js");
+const { ANSWER_DIRECTLY, archiveAgents, findDuplicateByVector, isPureGreeting, parseClassification, parseRewrite, rewriteHistoryContext, spawnAgent } = await import("../agent/agent.js");
 
 const prisma = getPrismaClient();
 
 describe("parseClassification", () => {
   test("valid spawn_agent with confidence >= 0.5 is accepted", () => {
     const c = parseClassification('{"action":"spawn_agent","targetAgentId":null,"taskDescription":"check email","confidence":0.9}');
-    expect(c).toEqual({ action: "spawn_agent", taskDescription: "check email", confidence: 0.9 });
+    expect(c).toEqual({ action: "spawn_agent", taskDescription: "check email", confidence: 0.9, complexity: "simple" });
+  });
+
+  test("parseClassification emits complexity, defaulting to simple", () => {
+    expect(parseClassification('{"action":"spawn_agent","taskDescription":"x","confidence":0.9}').complexity).toBe("simple");
+    expect(parseClassification('{"action":"one_shot","confidence":0.9}').complexity).toBe("simple");
+  });
+
+  test("an explicit complex complexity is honored for spawn_agent and one_shot", () => {
+    expect(parseClassification('{"action":"spawn_agent","taskDescription":"x","complexity":"complex","confidence":0.9}').complexity).toBe("complex");
+    expect(parseClassification('{"action":"one_shot","complexity":"complex","confidence":0.9}').complexity).toBe("complex");
+  });
+
+  test("anything other than exactly 'complex' falls back to simple", () => {
+    expect(parseClassification('{"action":"spawn_agent","taskDescription":"x","complexity":"COMPLEX","confidence":0.9}').complexity).toBe("simple");
+    expect(parseClassification('{"action":"one_shot","complexity":"medium","confidence":0.9}').complexity).toBe("simple");
   });
 
   test("confidence below 0.5 forces answer_directly", () => {
@@ -131,6 +146,41 @@ describe("isPureGreeting (rewrite guard)", () => {
     expect(isPureGreeting("what's up with my 2026 watch")).toBe(false);
     expect(isPureGreeting("ok")).toBe(false);
     expect(isPureGreeting("")).toBe(false);
+  });
+});
+
+describe("spawnAgent (Phase 7 complexity persistence)", () => {
+  const userId = `spawn-cx-${Date.now()}`;
+  const dim = 1536;
+  const vec = Array.from({ length: dim }, (_, i) => (i % 2 === 0 ? 1 : 0));
+  let spawnedAgentId: string | null = null;
+
+  beforeAll(async () => {
+    await prisma.user.create({ data: { id: userId, email: `${userId}@test.local`, passwordHash: "x" } });
+    await prisma.conversation.create({ data: { userId } });
+  });
+
+  afterAll(async () => {
+    if (spawnedAgentId) {
+      await prisma.outboxEvent.deleteMany({ where: { payload: { path: ["agentId"], equals: spawnedAgentId } } });
+    }
+    await prisma.agent.deleteMany({ where: { userId } });
+    await prisma.conversation.deleteMany({ where: { userId } });
+    await prisma.user.delete({ where: { id: userId } });
+  });
+
+  test("spawnAgent stores the classified complexity on the Agent row", async () => {
+    const conv = await prisma.conversation.findFirst({ where: { userId } });
+    const { agentId } = await spawnAgent({
+      userId,
+      ownerConversationId: conv!.id,
+      taskDescription: "book the cheapest flight under $400",
+      embedding: vec,
+      complexity: "complex",
+    });
+    spawnedAgentId = agentId;
+    const agent = await prisma.agent.findUnique({ where: { id: agentId } });
+    expect(agent?.complexity).toBe("complex");
   });
 });
 

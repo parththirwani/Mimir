@@ -19,6 +19,7 @@ import { ConnectionError, GMAIL_INTEGRATION, ProviderError, ProviderErrorKind } 
 import type { Job } from "bullmq";
 import { fetchEntityData } from "../integrations/gmail/gmail.js";
 import { publishUserEvent } from "../infra/redis.js";
+import { evaluateTask, reflectionFeedbackMessage, reflectRun, type ReflectRunResult } from "./reflector.js";
 import { validateTriggerFire } from "./trigger-eval.js";
 import { agentTasksFor } from "./tasks-registry.js";
 import { parseSurfaceVerdict } from "./triage.js";
@@ -483,6 +484,9 @@ export interface OneShotJobData {
   userId: string;
   conversationId: string;
   content: string;
+  // Phase 7 complexity gate: the classification call tags one_shot work simple|complex;
+  // complex one-shot runs route through the reflector. Absent => simple.
+  complexity?: "simple" | "complex";
 }
 
 // The one-shot processor: a single tool-backed answer with NO Agent row — the
@@ -515,34 +519,56 @@ export async function executeOnce(job: Job, opts?: { caller?: LlmCaller }): Prom
     { role: "system", content: oneShotSystemPrompt() },
     { role: "user", content },
   ];
-
-  // One-shot roster: browser/notion/gmail/MCP tasks + the wait escape hatch.
-  // No draft (its confirmation flow needs a resolvable Agent — see
-  // classification.md rule 13) and no trigger CRUD (agent-scoped).
   const availableTasks = await agentTasksFor(userId, { includeTriggerTools: false });
   const tools: LlmTool[] = [waitSystemTool, ...availableTasks.map((t) => toLlmTool(t))];
 
-  const outcome = await runToolLoop(
-    { messages, tools, userId, availableTasks },
-    async (name) => {
-      if (name !== "wait") return { handled: false };
-      getLogger().info({ conversationId, jobId }, "one-shot discarded via wait tool");
-      return { handled: true, stopped: "wait" as const };
-    },
-    caller,
-  );
-  if ("stopped" in outcome) return;
-  const result = outcome.result;
+  // The wait escape hatch doubles as the one-shot terminal handler. Hoisted so
+  // the reflector's retry rounds reuse it (runToolLoop mutates its messages
+  // array, so each attempt must start from a fresh base).
+  const onTerminalTool: TerminalToolHandler = async (name) => {
+    if (name !== "wait") return { handled: false };
+    getLogger().info({ conversationId, jobId }, "one-shot discarded via wait tool");
+    return { handled: true, stopped: "wait" as const };
+  };
+  const generate: (feedback?: string) => Promise<ToolLoopOutcome> = async (feedback) => {
+    // Fresh base per attempt: runToolLoop mutates the array it's given.
+    const attemptMessages: LlmMessage[] = [...messages];
+    if (feedback) attemptMessages.push({ role: "system", content: reflectionFeedbackMessage(feedback) });
+    return runToolLoop({ messages: attemptMessages, tools, userId, availableTasks }, onTerminalTool, caller);
+  };
+
+  // Phase 7: a complex one-shot runs through the generator/evaluator loop. The
+  // evaluator's task is the rewritten query (job.data.content). No agentId —
+  // reflection metadata stays in-memory (no ReflectionEvent/AgentEvent rows).
+  let finalOutcome: ToolLoopOutcome;
+  let lowConfidence = false;
+  if (job.data.complexity === "complex") {
+    const reflected = await reflectRun({
+      generate,
+      evaluate: async (resultContent) => evaluateTask(userId, content, resultContent, caller),
+      taskDescription: content,
+      userId,
+    });
+    finalOutcome = reflected.outcome;
+    lowConfidence = reflected.lowConfidence;
+  } else {
+    finalOutcome = await generate();
+  }
+  if ("stopped" in finalOutcome) return;
+  const result = finalOutcome.result;
 
   // Direct user ask — never gated by the noise filter (mirrors userTriggered on
   // the agent path). The message write carries the job-scoped clientMessageId so
   // a post-write crash stays idempotent on retry.
   const framed = await frameResultForUser({ result: result.content, userMessage: content, userId, caller });
+  const surfacedContent = lowConfidence
+    ? `${framed}\n\n(Note: I couldn't fully verify this result — please double-check the details.)`
+    : framed;
   const message = await prisma.message.create({
     data: {
       conversationId,
       role: "assistant",
-      content: framed,
+      content: surfacedContent,
       status: "complete",
       model: result.model,
       tokenCount: result.usage.totalTokens,
@@ -738,7 +764,7 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller } = {}):
     }
   }
 
-  const llmMessages: LlmMessage[] = [
+  const baseMessages: LlmMessage[] = [
     { role: "system", content: systemNote },
     ...history,
     { role: "user", content: `Current integration data:\n${JSON.stringify(data, null, 2)}` },
@@ -756,29 +782,80 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller } = {}):
   // Multi-turn tool loop (4.9) — shared with the one-shot path (executeOnce).
   // A terminal tool call (wait/draft) ends the run; a registered Task result is
   // appended as a tool message and the model is re-called with the accumulated
-  // history, capped by MAX_TOOL_DEPTH inside runToolLoop.
-  const outcome = await runToolLoop(
-    { messages: llmMessages, tools, userId: agent.userId, availableTasks, agentId },
-    async (name, toolCall, result) => {
-      if (name !== "wait" && name !== "draft") return { handled: false };
-      const terminal = await handleAgentTool(agentId, agent.userId, agent.ownerConversationId, toolCall, result);
-      if (terminal.outcome === "wait") return { handled: true, stopped: "wait" as const };
-      if (terminal.outcome === "draft") {
-        getLogger().info({ agentId, messageId: terminal.messageId }, "agent draft inserted (pending confirmation)");
-        return { handled: true, stopped: "draft" as const };
-      }
-      return { handled: false };
-    },
-    opts.caller,
-  );
-  if ("stopped" in outcome) {
-    if (outcome.stopped === "wait") {
+  // history, capped by MAX_TOOL_DEPTH inside runToolLoop. Hoisted so the
+  // reflector's retry rounds reuse it (runToolLoop mutates its messages array,
+  // so each attempt must start from a fresh base).
+  const onTerminalTool: TerminalToolHandler = async (name, toolCall, result) => {
+    if (name !== "wait" && name !== "draft") return { handled: false };
+    const terminal = await handleAgentTool(agentId, agent.userId, agent.ownerConversationId, toolCall, result);
+    if (terminal.outcome === "wait") return { handled: true, stopped: "wait" as const };
+    if (terminal.outcome === "draft") {
+      getLogger().info({ agentId, messageId: terminal.messageId }, "agent draft inserted (pending confirmation)");
+      return { handled: true, stopped: "draft" as const };
+    }
+    return { handled: false };
+  };
+  const generate: (feedback?: string) => Promise<ToolLoopOutcome> = async (feedback) => {
+    const attemptMessages = [...baseMessages];
+    if (feedback) attemptMessages.push({ role: "system", content: reflectionFeedbackMessage(feedback) });
+    return runToolLoop(
+      { messages: attemptMessages, tools, userId: agent.userId, availableTasks, agentId },
+      onTerminalTool,
+      opts.caller,
+    );
+  };
+
+  // Phase 7 (7.1): only `complex` agents route through the reflector. The first
+  // generation IS the existing tool loop; a failed evaluation feeds feedback
+  // back into a fresh retry. The first fetchEntityData result is reused — no
+  // fresh fetch on retry. wait/draft short-circuit (never evaluated).
+  let finalOutcome: ToolLoopOutcome;
+  let lowConfidence = false;
+  let retriedAttempts: ReflectRunResult["retriedAttempts"] = [];
+  if (agent.complexity === "complex") {
+    const reflected = await reflectRun({
+      generate,
+      evaluate: async (resultContent) => evaluateTask(agent.userId, agent.taskDescription, resultContent, opts.caller),
+      taskDescription: agent.taskDescription,
+      userId: agent.userId,
+    });
+    finalOutcome = reflected.outcome;
+    lowConfidence = reflected.lowConfidence;
+    retriedAttempts = reflected.retriedAttempts;
+  } else {
+    finalOutcome = await generate();
+  }
+  // 7.3.3 audit rows persisted AFTER the loop completes — and BEFORE the
+  // terminal short-circuit, so a run that stopped (wait/draft) on a later
+  // attempt still records its earlier failed attempts. A run that crashes
+  // mid-loop persists nothing, so a BullMQ retry re-runs clean and can't
+  // accumulate duplicate rows. No AgentEvent write — ReflectionEvent is the
+  // audit trail; writing one would pollute loadContext's history with stale
+  // per-attempt feedback. Best-effort: a failed write must never flip an
+  // already-produced result.
+  if (retriedAttempts.length > 0) {
+    try {
+      await prisma.reflectionEvent.createMany({
+        data: retriedAttempts.map(({ attempt, verdict }) => ({
+          agentId,
+          attemptNumber: attempt,
+          score: verdict.score,
+          feedback: verdict.feedback,
+        })),
+      });
+    } catch (e) {
+      getLogger().error({ err: e, agentId, attempts: retriedAttempts.length }, "reflection event write failed (best-effort)");
+    }
+  }
+
+  if ("stopped" in finalOutcome) {
+    if (finalOutcome.stopped === "wait") {
       await trackEvent(agent.userId, "agent_event_discarded", { agentId, category: "wait_tool" });
     }
     await safeFold(agentId);
     return;
   }
-  const result = outcome.result;
+  const result = finalOutcome.result;
 
   await prisma.agent.update({ where: { id: agentId }, data: { lastActiveAt: new Date() } });
 
@@ -812,6 +889,8 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller } = {}):
         category: verdict2.category,
         model: result.actualModel ?? result.model,
         tokens: result.usage.totalTokens,
+        // 7.3.2: exhausted reflector = best-scoring attempt, flagged, not blocked.
+        ...(lowConfidence ? { lowConfidence: true } : {}),
       },
     },
   });
@@ -834,11 +913,16 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller } = {}):
     userMessage: context ?? "",
     ...(opts.caller ? { caller: opts.caller } : {}),
   });
+  // 7.3.2 low-confidence signal: a short appended note in the user-visible text
+  // (no Message column — payload flag + text note; UI affordance deferred).
+  const surfacedContent = lowConfidence
+    ? `${framed}\n\n(Note: I couldn't fully verify this result — please double-check the details.)`
+    : framed;
   const message = await prisma.message.create({
     data: {
       conversationId: agent.ownerConversationId,
       role: "assistant",
-      content: framed,
+      content: surfacedContent,
       status: "complete",
       model: result.model,
       tokenCount: result.usage.totalTokens,

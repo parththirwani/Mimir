@@ -69,7 +69,7 @@ describe("mail-poll sweep (lazy)", () => {
     const schedulers = await agentTriggers.getJobSchedulers();
     const pollScheduler = schedulers.find((s) => s.key === "mail-poll-sweep");
     expect(pollScheduler).toBeDefined();
-    expect(pollScheduler?.pattern).toBe("*/5 * * * *");
+    expect(pollScheduler?.pattern).toBe("* * * * *");
   });
 
   test("agent-triggers worker dispatches a mail-poll-sweep job (runs pollImportantMail, completes)", async () => {

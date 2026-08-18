@@ -44,6 +44,9 @@ export const configSchema = z.object({
   // exercised daily to detect a silent break in the provider's proxy
   // transport. Skipped when unset.
   CONNECTION_CANARY_USER_ID: z.string().min(1).optional(),
+  // Mail poll — fixed-cadence inbox sweep. Env override keeps the cost/latency
+  // tradeoff tunable without a redeploy (default: every minute, per 6.5.3).
+  MAIL_POLL_CRON: z.string().default("* * * * *"),
   // Web Push (7.1): VAPID keys. Absent => push delivery is disabled and events
   // only reach users with a live socket (message stays in the thread otherwise).
   VAPID_PUBLIC_KEY: z.string().min(1).optional(),

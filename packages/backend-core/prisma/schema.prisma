@@ -27,6 +27,11 @@ enum AgentStatus {
   archived
 }
 
+enum AgentComplexity {
+  simple
+  complex
+}
+
 model User {
   id           String   @id @default(uuid())
   email        String   @unique
@@ -112,11 +117,15 @@ model Agent {
   taskDescription     String      @db.Text
   entity              String?
   status              AgentStatus @default(active)
+  // Phase 7 complexity gate (7.1): decided once at spawn by the 4.2
+  // classification call. Only `complex` agents route through the reflector.
+  complexity          AgentComplexity @default(simple)
   embedding           Unsupported("vector(1536)")? // needs CREATE EXTENSION vector (hand-added to init migration); client access via $queryRaw only
   contextSummary      String?     @db.Text // folded-in summary of older AgentEvents once the per-agent context budget (40 events / 8k tokens) is exceeded
   lastActiveAt        DateTime    @default(now())
   createdAt           DateTime    @default(now())
   events              AgentEvent[]
+  reflectionEvents    ReflectionEvent[]
   triggers            Trigger[]
 
   @@index([userId, status])
@@ -129,6 +138,22 @@ model AgentEvent {
   eventType String
   payload   Json
   createdAt DateTime @default(now())
+
+  @@index([agentId, createdAt])
+}
+
+// Phase 7 reflector (7.3.3): one row per failed evaluation on a complex run.
+// Kept separate from AgentEvent so reflection noise doesn't pollute the agent's
+// working context once a final answer is reached. `agentId` stays required —
+// one-shot runs (no Agent) skip the DB write, not the column.
+model ReflectionEvent {
+  id            String   @id @default(uuid())
+  agentId       String
+  agent         Agent    @relation(fields: [agentId], references: [id])
+  attemptNumber Int
+  score         Float
+  feedback      String   @db.Text
+  createdAt     DateTime @default(now())
 
   @@index([agentId, createdAt])
 }

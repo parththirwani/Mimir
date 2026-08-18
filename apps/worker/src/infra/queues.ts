@@ -1,4 +1,4 @@
-import { getConfig, getLogger, MAIL_POLL_CRON, runWithContext } from "@mimir/backend-core";
+import { getConfig, getLogger, runWithContext } from "@mimir/backend-core";
 import { Queue, Worker, type Job, type JobsOptions } from "bullmq";
 import { executeAgent, executeOnce } from "../agent/agent-execution.js";
 import { runDormancySweep } from "../agent/dormancy.js";
@@ -52,10 +52,12 @@ export async function scheduleDormancySweep(): Promise<void> {
 }
 
 // Fixed-cadence inbox sweep; upserts alongside dormancy on the same scheduler.
+// Cadence is env-driven (MAIL_POLL_CRON, default 1-minute) so cost/latency stays
+// tunable without a redeploy.
 export async function scheduleMailPollSweep(): Promise<void> {
   await agentTriggers.upsertJobScheduler(
     "mail-poll-sweep",
-    { pattern: MAIL_POLL_CRON, immediately: false },
+    { pattern: cfg.MAIL_POLL_CRON, immediately: false },
     { name: "mail-poll-sweep", data: { poll: true } },
   );
 }

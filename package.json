@@ -10,6 +10,7 @@
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "verify": "bun run scripts/verify-no-duplication.ts",
     "classify": "bun scripts/intent-iteration/run-classify.ts",
+    "phase7-attack": "bun scripts/phase7-attack/run.ts",
     "iterate": "bun scripts/intent-iteration/run-e2e.ts",
     "intent": "bun scripts/intent-iteration/run-intent.ts"
   },

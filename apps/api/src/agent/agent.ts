@@ -19,19 +19,26 @@ export type ClassificationAction =
   | "manage_list"
   | "ask_clarification";
 
+export type ClassificationComplexity = "simple" | "complex";
+
 export interface Classification {
   action: ClassificationAction;
   targetAgentId?: string;
   taskDescription?: string;
   targetHint?: string;
   confidence: number;
+  // Phase 7 complexity gate (7.1): decided once at spawn by this same call.
+  // Only `complex` routes through the reflector. Defaults to "simple".
+  // ponytail: complexity is decided once at spawn; 7.1.2's "re-evaluatable" is
+  // deferred until a mechanism that changes scope mid-run exists.
+  complexity: ClassificationComplexity;
 }
 
 // Actions that must NEVER carry a targetAgentId (a cancel must not become a
 // retarget/resume). Defensive: even if the model emits one, we strip it.
 const NO_TARGET_ACTIONS: ClassificationAction[] = ["manage_cancel", "manage_list", "ask_clarification", "answer_directly", "one_shot"];
 
-export const ANSWER_DIRECTLY: Classification = { action: "answer_directly", confidence: 0 };
+export const ANSWER_DIRECTLY: Classification = { action: "answer_directly", confidence: 0, complexity: "simple" };
 
 // Structured JSON output {action, targetAgentId, taskDescription, confidence}.
 // Plain JSON prompt + parse, not tool-calls — the OpenRouter wrapper has no tool
@@ -154,6 +161,9 @@ export function parseClassification(raw: string): Classification {
         ? rawAction
         : "answer_directly";
     const confidence = typeof json.confidence === "number" ? json.confidence : 0;
+    // Phase 7 (7.1): complexity decided at spawn. Only an explicit "complex" is
+    // honored; anything else (missing, malformed, "simple") defaults to simple.
+    const complexity: ClassificationComplexity = json.complexity === "complex" ? "complex" : "simple";
     if (action === "answer_directly") return ANSWER_DIRECTLY;
     // Spec 4.2.2 fallback: confidence < 0.5 forces answer_directly. Applied to
     // the state-creating action (spawn_agent), to the tool-delegating one_shot,
@@ -171,7 +181,7 @@ export function parseClassification(raw: string): Classification {
         : undefined;
     const taskDescription = typeof json.taskDescription === "string" ? json.taskDescription : undefined;
     const targetHint = typeof json.targetHint === "string" ? json.targetHint : undefined;
-    return { action, targetAgentId, taskDescription, targetHint, confidence };
+    return { action, targetAgentId, taskDescription, targetHint, confidence, complexity };
   } catch {
     return ANSWER_DIRECTLY;
   }
@@ -221,6 +231,7 @@ export async function spawnAgent(opts: {
   taskDescription: string;
   embedding: number[];
   context?: string;
+  complexity: ClassificationComplexity;
 }): Promise<{ agentId: string }> {
   const vec = `[${opts.embedding.join(",")}]`;
   const agentId = await prisma.$transaction(async (tx) => {
@@ -229,6 +240,7 @@ export async function spawnAgent(opts: {
         userId: opts.userId,
         ownerConversationId: opts.ownerConversationId,
         taskDescription: opts.taskDescription,
+        complexity: opts.complexity,
         // The worker only fetches Gmail when the entity OR task mentions
         // email/mail (gmail.ts's own guard); hardcoding "gmail" made every
         // spawned agent — including web-search watches — hit Gmail and surface

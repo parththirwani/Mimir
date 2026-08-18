@@ -22,8 +22,6 @@ export const AGENT_CONTEXT_MAX_EVENTS = 40; // last N AgentEvents as execution c
 export const AGENT_CONTEXT_MAX_TOKENS = 8000; // whichever of events/tokens is smaller wins
 export const AGENT_DORMANCY_DAYS = 7; // no AgentEvent for this long => dormant
 
-// Mail poll — fixed-cadence inbox sweep
-export const MAIL_POLL_CRON = "*/5 * * * *"; // cron used for the mail-poll sweep
 // A mail judged "noise" is held briefly, then re-judged. The filter is cheap
 // (gpt-4o-mini) and imperfect; a permanent claim would silently drop a real
 // meeting invite on one bad call. 24h bounds the re-judge cost per mail.
@@ -33,3 +31,7 @@ export const MAIL_NOISE_TTL_SECONDS = 24 * 60 * 60;
 // counter is a stopgap until Phase 10's real UsageRecord billing; keep the cap
 // low enough that a runaway loop can't produce a surprise bill.
 export const BROWSER_DAILY_MINUTES_CAP = 30; // per-user per-day hosted-browser minutes
+
+// Phase 7 reflector (7.3.2 / 7.4.1) — generator/evaluator loop for complex tasks.
+export const REFLECTOR_MAX_ATTEMPTS = 3; // cap on generate+eval rounds; exhaust => best-scoring attempt surfaces
+export const REFLECTOR_TIME_BUDGET_MS = 60_000; // whole-loop budget = 2x the 30s transport ceiling; forces early exit
