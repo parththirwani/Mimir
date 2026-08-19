@@ -187,7 +187,7 @@ describe("executePlanSteps (unit)", () => {
     const result = await executePlanSteps({
       steps: [
         { id: "s1", description: "first", dependsOn: [] },
-        { id: "s2", description: "second", dependsOn: [] },
+        { id: "s2", description: "second", dependsOn: ["s1"] },
       ],
       userId,
       taskDescription: "book flight",
@@ -199,7 +199,7 @@ describe("executePlanSteps (unit)", () => {
         failureContexts.push(failureContext);
         return [
           { id: "s1", description: "first", dependsOn: [] },
-          { id: "s3", description: "retry differently", dependsOn: [] },
+          { id: "s3", description: "retry differently", dependsOn: ["s1"] },
         ];
       },
     });
@@ -236,7 +236,7 @@ describe("executePlanSteps (unit)", () => {
     const result = await executePlanSteps({
       steps: [
         { id: "s1", description: "first", dependsOn: [] },
-        { id: "s2", description: "second", dependsOn: [] },
+        { id: "s2", description: "second", dependsOn: ["s1"] },
       ],
       userId,
       taskDescription: "t",
@@ -246,7 +246,7 @@ describe("executePlanSteps (unit)", () => {
       },
       replan: async () => [
         { id: "s1", description: "first", dependsOn: [] },
-        { id: "s2", description: "second", dependsOn: [] },
+        { id: "s2", description: "second", dependsOn: ["s1"] },
       ],
     });
     expect(result.outcome).toBe("failed");
@@ -258,7 +258,7 @@ describe("executePlanSteps (unit)", () => {
     const result = await executePlanSteps({
       steps: [
         { id: "s1", description: "first", dependsOn: [] },
-        { id: "s2", description: "second", dependsOn: [] },
+        { id: "s2", description: "second", dependsOn: ["s1"] },
       ],
       userId,
       taskDescription: "t",

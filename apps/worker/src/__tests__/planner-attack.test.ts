@@ -238,10 +238,12 @@ describe("executePlanSteps — adversarial step outputs and replan loops", () =>
       steps: samePlan,
       userId,
       taskDescription: "t",
-      generateStep: async (step) => {
+      generateStep: async () => {
         generateCalls += 1;
-        if (step.id === "b") throw new Error("always fails");
-        return { result: chat("RESULT a") };
+        // EVERY member of the parallel group fails => whole-group failure, so the
+        // replan loop is exercised. (A single failing independent member is now a
+        // partial failure that proceeds — Phase 9 — so both must fail here.)
+        throw new Error("always fails");
       },
       replan: async () => samePlan, // identical plan every time — must not loop forever
     });

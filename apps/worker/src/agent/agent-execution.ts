@@ -20,7 +20,7 @@ import type { Job } from "bullmq";
 import { fetchEntityData } from "../integrations/gmail/gmail.js";
 import { publishUserEvent } from "../infra/redis.js";
 import { evaluateTask, reflectionFeedbackMessage, reflectRun, type GeneratorOutcome, type ReflectRunResult } from "./reflector.js";
-import { executePlanSteps, planTask, type PlanStep, type Planner } from "./planner.js";
+import { aggregateBatch, executePlanSteps, planTask, type PlanStep, type Planner } from "./planner.js";
 import { validateTriggerFire } from "./trigger-eval.js";
 import { agentTasksFor } from "./tasks-registry.js";
 import { parseSurfaceVerdict } from "./triage.js";
@@ -897,6 +897,7 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller; planner
         taskDescription: agent.taskDescription,
         generateStep: runStep,
         replan: async (failureContext) => planner.planTask(agent.userId, agent.taskDescription, failureContext, opts.caller),
+        aggregate: async (userId, task, outputs, missing) => aggregateBatch(userId, task, outputs, missing, opts.caller),
       });
       if (planOutcome.outcome === "stopped") {
         finalOutcome = { stopped: planOutcome.stopped };

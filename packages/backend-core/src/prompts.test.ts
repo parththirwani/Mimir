@@ -96,6 +96,7 @@ describe("surface prompt files", () => {
     "email_resolve.md",
     "agent_draft_resolve.md",
     "surface.md",
+    "aggregation.md",
   ];
 
   for (const f of expectedFiles) {
