@@ -7,6 +7,7 @@ import {
   backfillCost,
   rollDailyUsage,
   chatSystemPrompt,
+  searchActiveFacts,
 } from "@mimir/backend-core";
 import { messageSchema } from "@mimir/zod-schemas";
 import { ConnectionError } from "@mimir/connection-provider";
@@ -50,6 +51,29 @@ import {
 const prisma = getPrismaClient();
 
 const messageRouter: Router = Router();
+
+// Reply context window (10.2.1): the payload is newest-first from the DB query
+// (orderBy createdAt desc, take 50). Keep the newest N and return them
+// oldest->newest — the shape the reply call consumes. Exactly matching a
+// full fetch in tests reproduces the oldest-50 bug if the query order flips.
+export function lastNMessages<T>(messages: T[], n = 50): T[] {
+  return messages.slice(0, n).reverse();
+}
+
+// 10.2.2 cost gate — only query durable facts once the reply window filled up
+// (history.length === windowSize means the DB take was capped, i.e. the thread
+// actually has >= windowSize messages). Below that the full history is already in
+// context and a fact-retrieval call (embed + pgvector query) buys nothing.
+export function shouldFetchFacts(historyLength: number, windowSize = 50): boolean {
+  return historyLength >= windowSize;
+}
+
+// Render retrieved facts (10.2.2) as a system context block, or null when there's
+// nothing to inject (empty result / fail-open reads return []).
+export function factContextBlock(facts: { subject: string; fact: string }[]): string | null {
+  if (facts.length === 0) return null;
+  return `Relevant facts from earlier in this thread:\n${facts.map((f) => `- ${f.subject}: ${f.fact}`).join("\n")}`;
+}
 
 // POST /api/v1/message
 messageRouter.post("/message", requireAuth, async (req, res) => {
@@ -365,12 +389,14 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
   }
 
   // Context: prior assistant/user turns so the reply is a conversation, not a one-shot.
+  // 10.2.1 — window is the most RECENT 50 (desc + take 50), returned oldest->newest,
+  // not the oldest 50 the old asc+take bug produced.
   const history = await prisma.message.findMany({
     where: { conversationId, role: { in: ["user", "assistant"] } },
-    orderBy: { createdAt: "asc" },
+    orderBy: { createdAt: "desc" },
     take: 50,
   });
-  const messages = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+  const messages = lastNMessages(history).map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
   // Email write/send requests run BEFORE the interaction-agent classification so
   // "send an email to X" is never captured by spawn_agent (execution agents stay
@@ -742,7 +768,16 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     // The Interaction Agent persona (system.md + rules.md + integrations.md +
     // email.md + meomery.md) leads the chat context — everything the model says
     // to the user is governed by it.
-    result = await callOpenRouter([{ role: "system", content: chatSystemPrompt() }, ...messages], { useCase: "chat_response" });
+    // 10.2.2 — once the thread reaches the window (history.length === 50 means
+    // the query was capped, i.e. >=50 messages), retrieve durable facts for the
+    // current message and inject them as a system block after the persona.
+    const factBlock = shouldFetchFacts(history.length)
+      ? factContextBlock(await searchActiveFacts(conversationId, content))
+      : null;
+    const replyContext = factBlock
+      ? [{ role: "system" as const, content: factBlock }, ...messages]
+      : messages;
+    result = await callOpenRouter([{ role: "system", content: chatSystemPrompt() }, ...replyContext], { useCase: "chat_response" });
   } catch (e) {
     getLogger().error({ err: e }, "openrouter call failed");
     await prisma.message.update({

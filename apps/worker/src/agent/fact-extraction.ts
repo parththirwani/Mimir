@@ -1,5 +1,4 @@
 import {
-  FACT_EXTRACTION_TOP_K,
   FACT_NEAR_THRESHOLD,
   getLogger,
   getPrismaClient,
@@ -15,11 +14,13 @@ import type { ChatResult, LlmMessage } from "@mimir/shared-types";
 // fixed pipeline (NOT agent-managed memory): run on the same sweep tick as
 // summarization over the same delta message range, then stored for retrieval.
 //
-// Three independent operations, deliberately three separate code paths:
-//   - extractFacts: write path (durable facts + supersede-on-contradiction)
-//   - searchActiveFacts: read path (top-K over ACTIVE facts only)
-//   - deleteFact: "should never have been stored" — soft delete, excluded from
-//     EVERY read path, row kept only for audit. NOT folded into supersede.
+// The READ path (searchActiveFacts / FactHit) lives in packages/backend-core
+// (shared with the api's reply-context injection) and is re-exported here so
+// this module remains the single import surface for callers/tests.
+//
+// ponytail: compat re-export, delete when scripts/phase10-facts/run.ts and
+// __tests__/fact-extraction.test.ts import from @mimir/backend-core directly.
+export { searchActiveFacts, type FactHit } from "@mimir/backend-core";
 
 const prisma = getPrismaClient();
 
@@ -44,15 +45,6 @@ export type FactStatus = "active" | "superseded" | "deleted";
 // Deletion reasons. Short, canonical set; stored as free string so a future
 // caller can extend without a migration.
 export type FactDeleteReason = "incorrect_extraction" | "user_requested" | "manual_correction";
-
-// Hard requirement for the Reader interface: only ACTIVE facts are ever read.
-// Both superseded (changed) and deleted (should-never-have-existed) are excluded
-// by construction — the queries filter `status = 'active'` EXPLICITLY (never
-// `status != 'superseded'`), so a deleted fact can't sneak back via an accident.
-// The literal is written directly in the SQL below, NOT via an interpolated
-// variable: Prisma $queryRaw binds interpolated values as parameters, so a raw
-// string in WHERE position would be a bound parameter that's always truthy and
-// silently disable the filter.
 
 const EXTRACT_SYSTEM = loadPrompt("extract_facts.md");
 const CONFLICT_SYSTEM = loadPrompt("fact_conflict.md");
@@ -97,7 +89,7 @@ export function parseConflictVerdict(raw: string, count: number): boolean[] {
 // Write path — extractFacts
 // ---------------------------------------------------------------------------
 //
-// Runs on the same sweep tick as summarizeConversation over the SAME delta range
+// Runs on the schedule sweep over the SAME delta range
 // (from, to] so neither re-reads the whole thread. Fail-open: extraction must
 // never block the summary write or the sweep — all failures here are caught,
 // logged, and skipped.
@@ -301,55 +293,6 @@ export async function extractFacts(
   }
 
   return { inserted, superseded };
-}
-
-// ---------------------------------------------------------------------------
-// Read path — searchActiveFacts
-// ---------------------------------------------------------------------------
-
-export interface FactHit {
-  id: string;
-  subject: string;
-  fact: string;
-  similarity: number;
-}
-
-// Top-K embedding search over ACTIVE facts for a conversation. The WHERE clause
-// is `status = 'active'` EXPLICITLY — superseded AND deleted facts are excluded
-// by construction, never by accident. Fail-open: embed error -> empty list
-// (nothing injected), mirroring the roster-search behavior.
-export async function searchActiveFacts(
-  conversationId: string,
-  query: string,
-  deps: { embed?: (text: string) => Promise<number[]>; topK?: number } = {},
-): Promise<FactHit[]> {
-  const topK = deps.topK ?? FACT_EXTRACTION_TOP_K;
-  const embed = deps.embed ?? callEmbeddings;
-  if (!query.trim()) return [];
-
-  let vec: number[];
-  try {
-    vec = await embed(query);
-  } catch (e) {
-    getLogger().warn({ err: e, conversationId }, "fact search embed failed; injecting nothing (fail-open)");
-    return [];
-  }
-  if (vec.length === 0) return [];
-  const vecLiteral = `[${vec.join(",")}]`;
-
-  try {
-    const rows = await prisma.$queryRaw<FactHit[]>`
-      SELECT id, subject, fact, 1 - (embedding <=> ${vecLiteral}::vector) AS similarity
-      FROM "ExtractedFact"
-      WHERE status = 'active' AND "conversationId" = ${conversationId} AND embedding IS NOT NULL
-      ORDER BY embedding <=> ${vecLiteral}::vector
-      LIMIT ${topK}
-    `;
-    return rows;
-  } catch (e) {
-    getLogger().warn({ err: e, conversationId }, "fact search query failed; injecting nothing (fail-open)");
-    return [];
-  }
 }
 
 // ---------------------------------------------------------------------------
