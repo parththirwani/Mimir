@@ -53,3 +53,18 @@ export const PLAN_STEP_TIMEOUT_MS = 120_000;
 // call (and its concatenation fallback) so one giant/binary worker can't blow
 // the surface tier's context budget or balloon the final reply. Tunable.
 export const AGGREGATE_OUTPUT_MAX_CHARS = 8000;
+
+// Phase 10 fact layer — how many active ExtractedFacts to inject into reply
+// context on a top-K embedding search. Bounded to keep prompt context lean.
+export const FACT_EXTRACTION_TOP_K = 5;
+
+// Phase 10 fact layer — cosine-similarity floor before routing a same-subject
+// fact pair to the contradiction judge. The subject match is the real
+// discriminator (different things get different subjects); this is only a floor
+// to avoid spending a judge call on trivially orthogonal completions under one
+// subject. Set LOW: facts are short texts with naturally lower cosine sim than
+// the long-document value AGENT_DEDUP_THRESHOLD (0.85) was built for — a high
+// bar silently skips real contradictions ("rent $1200" -> "rent $1500" can sit
+// well below 0.8). Ceiling to revisit (ponytail): if same-subject judging volume
+// gets expensive, raise this toward 0.6 and batch cheaper.
+export const FACT_NEAR_THRESHOLD = 0.4;

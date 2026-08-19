@@ -12,6 +12,7 @@
     "classify": "bun scripts/intent-iteration/run-classify.ts",
     "phase7-attack": "bun scripts/phase7-attack/run.ts",
     "phase8-attack": "bun scripts/phase8-attack/run.ts",
+    "phase10-facts": "bun scripts/phase10-facts/run.ts",
     "iterate": "bun scripts/intent-iteration/run-e2e.ts",
     "intent": "bun scripts/intent-iteration/run-intent.ts"
   },

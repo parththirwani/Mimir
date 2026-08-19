@@ -59,6 +59,7 @@ model Conversation {
   createdAt DateTime  @default(now())
   messages  Message[]
   summaries ConversationSummary[]
+  facts     ExtractedFact[]
 
   @@index([userId])
 }
@@ -97,6 +98,41 @@ model ConversationSummary {
   @@index([conversationId])
 }
 
+// Phase 10 fact layer — flat, atomically-retrievable durable facts extracted from
+// the thread, alongside the narrative ConversationSummary (see fact-extraction.ts).
+// `status` is a plain string (not a PG enum) because it keeps gaining states —
+// active | superseded | deleted — and each addition would otherwise require an
+// ALTER TYPE migration. Enforce the allowed set with a TS union at call sites.
+//
+// Supersede-scan semantics differ deliberately from delete:
+//   - supersede: "this fact CHANGED" — old fact PRESERVED + excluded from reads,
+//     full history kept (temporal queries); new fact's supersedesId points here.
+//   - delete: "this fact should never have been stored / remove it" — status flip,
+//     excluded from EVERY read path, never resurfaces, row kept only for audit.
+model ExtractedFact {
+  id             String   @id @default(uuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  userId         String
+  subject        String
+  fact           String   @db.Text
+  embedding      Unsupported("vector(1536)")? // raw $executeRaw access only (mirrors Agent.embedding)
+  status         String   @default("active") // active | superseded | deleted
+  sourceMessageId String?
+  supersedesId   String?
+  // ponytail: SetNull assumes no hard-purge path exists — supersede chains stay
+  // soft-deleted (status flip), rows are never physically removed, so the FK
+  // always resolves to an existing (deleted) row. If a GDPR/cleanup hard-delete
+  // path is ever added, revisit this: SetNull would silently snap supersede links.
+  supersedes     ExtractedFact?  @relation("FactSupersedes", fields: [supersedesId], references: [id], onDelete: SetNull)
+  supersededBy   ExtractedFact[] @relation("FactSupersedes")
+  deletedAt      DateTime?
+  deletedReason  String? // incorrect_extraction | user_requested | manual_correction
+  createdAt      DateTime @default(now())
+
+  @@index([conversationId, status])
+  @@index([conversationId, subject])
+}
 model RefreshToken {
   id        String    @id @default(uuid())
   userId    String
