@@ -8,7 +8,7 @@ import {
 import { ConnectionError, GMAIL_INTEGRATION, gmailProvider as gmailProviderOf } from "@mimir/connection-provider";
 import type { Job } from "bullmq";
 import { sendGmailDraft, type GmailTransport } from "../integrations/gmail/gmail.js";
-import { publishUserEvent } from "../infra/redis.js";
+import { publishUserEvent, newMessagePayload } from "../infra/redis.js";
 
 // The email-jobs processor: the API's confirm path enqueues an email_send
 // outbox row and returns the "sending now" ack immediately; this job performs
@@ -53,7 +53,7 @@ async function writeAndPublish(opts: {
     },
   });
   try {
-    await publishUserEvent(opts.userId, "new_message", { conversationId: opts.conversationId, messageId: message.id });
+    await publishUserEvent(opts.userId, "new_message", newMessagePayload(opts.conversationId, message));
   } catch (e) {
     getLogger().error({ err: e, userId: opts.userId }, "email send publish failed (message already written)");
   }

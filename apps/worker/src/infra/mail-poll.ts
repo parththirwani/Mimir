@@ -3,7 +3,7 @@ import { ConnectionError, GMAIL_INTEGRATION } from "@mimir/connection-provider";
 import type { Redis } from "ioredis";
 import { fetchEntityData, type GmailMessage } from "../integrations/gmail/gmail.js";
 import { triageVerdict, type TriageVerdict } from "../agent/triage.js";
-import { publishUserEvent, redis } from "./redis.js";
+import { publishUserEvent, newMessagePayload, redis } from "./redis.js";
 
 const prisma = getPrismaClient();
 
@@ -165,7 +165,7 @@ export async function pollImportantMail(deps: MailPollDeps = {}): Promise<number
         surfaced += 1;
         getLogger().info({ userId, messageId: msg.id, category: verdict.category }, "important mail surfaced");
         try {
-          await publish(userId, "new_message", { conversationId, messageId: message.id });
+          await publish(userId, "new_message", newMessagePayload(conversationId, message));
         } catch (publishErr) {
           getLogger().error({ err: publishErr, userId }, "mail publish failed (message already written)");
         }

@@ -18,7 +18,7 @@ import { toLlmTool, type Task } from "@mimir/tasks";
 import { ConnectionError, GMAIL_INTEGRATION, ProviderError, ProviderErrorKind } from "@mimir/connection-provider";
 import type { Job } from "bullmq";
 import { fetchEntityData } from "../integrations/gmail/gmail.js";
-import { publishUserEvent } from "../infra/redis.js";
+import { publishUserEvent, newMessagePayload } from "../infra/redis.js";
 import { evaluateTask, reflectionFeedbackMessage, reflectRun, type GeneratorOutcome, type ReflectRunResult } from "./reflector.js";
 import { aggregateBatch, executePlanSteps, planTask, type PlanStep, type Planner } from "./planner.js";
 import { validateTriggerFire } from "./trigger-eval.js";
@@ -157,7 +157,7 @@ async function surfaceProviderFailure(
     },
   });
   try {
-    await publishUserEvent(agent.userId, "new_message", { conversationId: agent.ownerConversationId, messageId: message.id });
+    await publishUserEvent(agent.userId, "new_message", newMessagePayload(agent.ownerConversationId, message));
   } catch (publishErr) {
     getLogger().error({ err: publishErr, agentId: agent.id }, "publish failed (provider failure message already written)");
   }
@@ -194,7 +194,7 @@ async function surfacePlanFailure(
     },
   });
   try {
-    await publishUserEvent(agent.userId, "new_message", { conversationId: agent.ownerConversationId, messageId: message.id });
+    await publishUserEvent(agent.userId, "new_message", newMessagePayload(agent.ownerConversationId, message));
   } catch (publishErr) {
     getLogger().error({ err: publishErr, agentId: agent.id }, "publish failed (plan-failure message already written)");
   }
@@ -395,7 +395,7 @@ export async function handleAgentTool(
       },
     });
     try {
-      await publishUserEvent(userId, "new_message", { conversationId: ownerConversationId, messageId: message.id });
+      await publishUserEvent(userId, "new_message", newMessagePayload(ownerConversationId, message));
     } catch (e) {
       getLogger().error({ err: e, agentId }, "publish failed (draft already written)");
     }
@@ -502,7 +502,7 @@ export function agentMessageKey(jobId: string): string {
 export async function findOneShotSurfaced(conversationId: string, jobId: string): Promise<{ id: string } | null> {
   return prisma.message.findFirst({
     where: { conversationId, clientMessageId: oneShotMessageKey(jobId) },
-    select: { id: true },
+    select: { id: true, content: true },
   });
 }
 
@@ -514,7 +514,7 @@ export async function findOneShotSurfaced(conversationId: string, jobId: string)
 export async function findAgentSurfaced(conversationId: string, jobId: string): Promise<{ id: string } | null> {
   return prisma.message.findFirst({
     where: { conversationId, clientMessageId: agentMessageKey(jobId) },
-    select: { id: true },
+    select: { id: true, content: true },
   });
 }
 
@@ -546,7 +546,7 @@ export async function executeOnce(job: Job, opts?: { caller?: LlmCaller }): Prom
     // socket push — push again so the user actually sees it. The client replaces
     // its full message list on new_message, so a redundant push is harmless.
     try {
-      await publishUserEvent(userId, "new_message", { conversationId, messageId: surfaced.id });
+      await publishUserEvent(userId, "new_message", newMessagePayload(conversationId, surfaced));
     } catch (e) {
       getLogger().error({ err: e, conversationId, messageId: surfaced.id }, "re-publish failed on one-shot retry short-circuit");
     }
@@ -621,7 +621,7 @@ export async function executeOnce(job: Job, opts?: { caller?: LlmCaller }): Prom
   // Publish only after the DB write committed; a publish failure must never flip
   // a successful run to failed (the message is already written).
   try {
-    await publishUserEvent(userId, "new_message", { conversationId, messageId: message.id });
+    await publishUserEvent(userId, "new_message", newMessagePayload(conversationId, message));
   } catch (e) {
     getLogger().error({ err: e, conversationId }, "publish failed (one-shot message already written)");
   }
@@ -707,7 +707,7 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller; planner
     // socket push — push again so the user actually sees it (the client replaces
     // its full message list on new_message, so a redundant push is harmless).
     try {
-      await publishUserEvent(agent.userId, "new_message", { conversationId: agent.ownerConversationId, messageId: surfaced.id });
+      await publishUserEvent(agent.userId, "new_message", newMessagePayload(agent.ownerConversationId, surfaced));
     } catch (e) {
       getLogger().error({ err: e, agentId, messageId: surfaced.id }, "re-publish failed on agent retry short-circuit");
     }
@@ -764,7 +764,7 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller; planner
       },
     });
     try {
-      await publishUserEvent(agent.userId, "new_message", { conversationId: agent.ownerConversationId, messageId: message.id });
+      await publishUserEvent(agent.userId, "new_message", newMessagePayload(agent.ownerConversationId, message));
     } catch (publishErr) {
       getLogger().error({ err: publishErr, agentId }, "publish failed (reconnect message already written)");
     }
@@ -1052,7 +1052,7 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller; planner
 
   // Publish only now, after the DB writes committed.
   try {
-    await publishUserEvent(agent.userId, "new_message", { conversationId: agent.ownerConversationId, messageId: message.id });
+    await publishUserEvent(agent.userId, "new_message", newMessagePayload(agent.ownerConversationId, message));
     getLogger().info({ agentId, messageId: message.id }, "agent result published");
   } catch (e) {
     getLogger().error({ err: e, agentId }, "publish failed (message already written)");
