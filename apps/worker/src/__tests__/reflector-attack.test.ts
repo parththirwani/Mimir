@@ -43,6 +43,9 @@ function attackCaller(opts: {
       return chat(JSON.stringify(v));
     }
     if (options?.useCase === "surface") return chat("FRAMED");
+    // Phase 8: a complex run plans first; "{}" fails open to the reflector path
+    // below, keeping gen counts untouched.
+    if (options?.useCase === "planning") return chat("{}");
     lastGenMessages.length = 0;
     lastGenMessages.push(...(messages as LlmMessage[]));
     genCount += 1;

@@ -126,9 +126,25 @@ model Agent {
   createdAt           DateTime    @default(now())
   events              AgentEvent[]
   reflectionEvents    ReflectionEvent[]
+  plans               Plan[]
   triggers            Trigger[]
 
   @@index([userId, status])
+}
+
+// Phase 8 planning (8.2): one row per planned complex run. `steps` is the
+// planner's ordered, dependency-resolved JSON. status tracks the run so a replan
+// can mark the failed plan before retrying. agentId stays required — one-shot
+// runs skip planning entirely (they have no Agent to own the plan).
+model Plan {
+  id        String   @id @default(uuid())
+  agentId   String
+  agent     Agent    @relation(fields: [agentId], references: [id])
+  steps     Json
+  status    String   @default("planned") // planned | running | completed | failed
+  createdAt DateTime @default(now())
+
+  @@index([agentId])
 }
 
 model AgentEvent {

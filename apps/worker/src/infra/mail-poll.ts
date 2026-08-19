@@ -1,5 +1,5 @@
 import { getLogger, getPrismaClient, MAIL_NOISE_TTL_SECONDS } from "@mimir/backend-core";
-import { GMAIL_INTEGRATION } from "@mimir/connection-provider";
+import { ConnectionError, GMAIL_INTEGRATION } from "@mimir/connection-provider";
 import type { Redis } from "ioredis";
 import { fetchEntityData, type GmailMessage } from "../integrations/gmail/gmail.js";
 import { triageVerdict, type TriageVerdict } from "../agent/triage.js";
@@ -172,6 +172,16 @@ export async function pollImportantMail(deps: MailPollDeps = {}): Promise<number
       }
     } catch (e) {
       getLogger().error({ err: e, userId }, "mail poll failed for user; continuing sweep");
+      // A dead connection (revoked/expired token, fail-fast) must flip the local
+      // row so the UI stops claiming "connected". Mirrors the agent-execution
+      // fail-fast flip; other errors are best-effort and just logged.
+      if (e instanceof ConnectionError) {
+        await prisma.integrationConnection.updateMany({
+          where: { userId, provider: GMAIL_INTEGRATION },
+          data: { status: "expired" },
+        });
+        getLogger().info({ userId }, "gmail connection marked expired from poll failure");
+      }
     }
   }
   return surfaced;

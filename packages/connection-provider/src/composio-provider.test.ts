@@ -115,4 +115,54 @@ describe("ComposioConnectionProvider gmailRequest", () => {
       kind: "not_connected",
     });
   });
+
+  test("maps a TOOL_AUTH_BadConnectedAccountState payload (422) to ConnectionError(expired)", async () => {
+    const p = provider(store({ connectionId: "ca-1", status: "connected" }));
+    const nested = JSON.stringify({
+      error: {
+        message: "Connected account is not in an ACTIVE state. Current status is \"EXPIRED\" but ACTIVE status is required for authorization.",
+        code: 1706,
+        slug: "TOOL_AUTH_BadConnectedAccountState",
+        suggested_fix: "Status reason: Access revoked; Details: { \"error\": \"invalid_grant\", \"error_description\": \"Token has been expired or revoked.\" }",
+      },
+    });
+    proxyThrow = Object.assign(new Error(`422 ${nested}`), { status: 422, code: 1706 });
+    await expect(p.gmailRequest("user-1", "/gmail/v1/users/me/profile")).rejects.toMatchObject({ kind: "expired" });
+  });
+});
+
+describe("ComposioConnectionProvider syncConnection", () => {
+  beforeEach(() => {
+    proxyCall = null;
+    proxyStatus = 200;
+    proxyData = { emailAddress: "me@example.com" };
+    proxyThrow = null;
+  });
+
+  test("persists expired on a non-200 probe result", async () => {
+    const s = store({ connectionId: "ca-1", status: "connected" });
+    const p = provider(s);
+    proxyStatus = 422;
+    const ok = await p.syncConnection("user-1", "ca-1");
+    expect(ok).toBe(false);
+    expect(s.row()?.status).toBe("expired");
+  });
+
+  test("persists expired when the probe throws (dead/revoked token)", async () => {
+    const s = store({ connectionId: "ca-1", status: "connected" });
+    const p = provider(s);
+    proxyThrow = Object.assign(new Error("unauthorized"), { status: 401 });
+    const ok = await p.syncConnection("user-1", "ca-1");
+    expect(ok).toBe(false);
+    expect(s.row()?.status).toBe("expired");
+  });
+
+  test("heals a dead row back to connected when the probe succeeds", async () => {
+    const s = store({ connectionId: "ca-1", status: "expired" });
+    const p = provider(s);
+    proxyStatus = 200;
+    const ok = await p.syncConnection("user-1", "ca-1");
+    expect(ok).toBe(true);
+    expect(s.row()?.status).toBe("connected");
+  });
 });

@@ -91,8 +91,14 @@ export class ComposioConnectionProvider implements ConnectionProvider {
     // mode, no separate health-check code to diverge.
     try {
       const { status } = await this.gmailRequest(userId, "/gmail/v1/users/me/profile", { connectionId: id });
-      if (status !== 200) return false;
+      if (status !== 200) {
+        // A probe that finds the account dead must persist the truth — otherwise
+        // the local row stays "connected" while the upstream token is revoked.
+        await this.upsertConnection(userId, id, "expired");
+        return false;
+      }
     } catch {
+      await this.upsertConnection(userId, id, "expired");
       return false;
     }
     await this.upsertConnection(userId, id, "connected");
@@ -174,8 +180,25 @@ export class ComposioConnectionProvider implements ConnectionProvider {
     if (status === 401 || status === 403) return "expired";
     const code = (e as { code?: string })?.code;
     if (code === "EXIT_CODE_429" || code === "RATE_LIMITED") return "expired";
+    if (isComposioAuthStateError(e)) return "expired";
     return null;
   }
+}
+
+// Composio encodes a dead connected account as a nested auth-state error (slug
+// TOOL_AUTH_BadConnectedAccountState, e.g. an account whose OAuth grant was
+// revoked — "invalid_grant"). Its HTTP status (422) is not itself a signal, so
+// fingerprint the nested payload the way the status-code checks above do. A
+// revoked/expired token can NEVER self-heal, so this must be fail-fast
+// (ConnectionError("expired")), never a silent generic error.
+function isComposioAuthStateError(e: unknown): boolean {
+  const text = `${(e as Error)?.message ?? ""}\n${JSON.stringify(e)}`;
+  return (
+    /TOOL_AUTH_/.test(text) ||
+    /not in an ACTIVE state/i.test(text) ||
+    /invalid_grant/i.test(text) ||
+    /expired or revoked/i.test(text)
+  );
 }
 
 // Expand `{ name: "a" | "a", "b": ["x","y"] }` into proxy parameters, rendering

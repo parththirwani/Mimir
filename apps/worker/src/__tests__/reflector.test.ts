@@ -36,6 +36,9 @@ function flowCaller(opts: {
       return chat(JSON.stringify(v));
     }
     if (options?.useCase === "surface") return chat("FRAMED");
+    // Phase 8: a complex run plans first; "{}" fails open to the reflector path
+    // below, keeping gen/eval counts untouched.
+    if (options?.useCase === "planning") return chat("{}");
     lastGenMessages = messages as LlmMessage[];
     genCount += 1;
     if (opts.toolCallsFirst && genCount === 1) {

@@ -7,7 +7,7 @@ process.env.REDIS_URL = "redis://localhost:6379";
 process.env.JWT_SECRET = "mail-poll-test-secret";
 
 const { getPrismaClient } = await import("@mimir/backend-core");
-const { GMAIL_INTEGRATION } = await import("@mimir/connection-provider");
+const { ConnectionError, GMAIL_INTEGRATION } = await import("@mimir/connection-provider");
 const { pollImportantMail } = await import("../infra/mail-poll.js");
 import type { MailPollDeps } from "../infra/mail-poll.js";
 
@@ -234,5 +234,19 @@ describe("pollImportantMail (lazy sweep)", () => {
     } finally {
       addSpy.mockRestore();
     }
+  });
+
+  test("a dead connection (ConnectionError) flips the local row to expired instead of staying 'connected'", async () => {
+    const deadDeps: MailPollDeps = {
+      ...mailDeps([]),
+      fetch: async (forUserId: string) => {
+        if (forUserId !== userId) return { provider: "gmail", messages: [] };
+        throw new ConnectionError("expired", "gmail access token rejected");
+      },
+    };
+    const surfaced = await pollImportantMail(deadDeps);
+    expect(surfaced).toBe(0);
+    const row = await prisma.integrationConnection.findFirst({ where: { userId, provider: GMAIL_INTEGRATION } });
+    expect(row?.status).toBe("expired");
   });
 });

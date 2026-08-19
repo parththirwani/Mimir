@@ -35,3 +35,6 @@ export const BROWSER_DAILY_MINUTES_CAP = 30; // per-user per-day hosted-browser 
 // Phase 7 reflector (7.3.2 / 7.4.1) — generator/evaluator loop for complex tasks.
 export const REFLECTOR_MAX_ATTEMPTS = 3; // cap on generate+eval rounds; exhaust => best-scoring attempt surfaces
 export const REFLECTOR_TIME_BUDGET_MS = 60_000; // whole-loop budget = 2x the 30s transport ceiling; forces early exit
+
+// Phase 8 planning (8.3.2) — replan cap for a complex run whose step fails.
+export const PLAN_REPLAN_CAP = 2; // total attempts: initial plan + up to 1 replan; exhaust => partial progress + explicit failure
