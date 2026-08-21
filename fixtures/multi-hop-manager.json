@@ -1,0 +1,21 @@
+{
+  "id": "multi-hop-manager",
+  "category": "multi-hop",
+  "title": "Multi-hop manager reachability via relation edges",
+  "description": "The answer lives on a fact only reachable by following a relation edge from the directly-hit fact. Regression guard for the 10.6 fact graph.",
+  "transcript": [
+    { "role": "user", "content": "Hi, starting to set up my info so you can help me keep track of things." },
+    { "role": "assistant", "content": "Sounds good, I'll note down durable facts as we go." },
+    { "role": "user", "content": "I'm Jordan and I work on the design team at Acme." },
+    { "role": "assistant", "content": "Got it, design team at Acme." },
+    { "role": "user", "content": "Dana is my manager on the design team." },
+    { "role": "assistant", "content": "Tracking that Dana manages you on design." },
+    { "role": "user", "content": "Dana reports to a VP named Priya who leads the design org." },
+    { "role": "assistant", "content": "Understood, Dana's VP is Priya." },
+    { "role": "user", "content": "Next week I'm taking PTO and want to make sure it's approved in advance." },
+    { "role": "assistant", "content": "PTO needs to be approved — noted." },
+    { "role": "user", "content": "Approval for my time off goes through my manager Dana." }
+  ],
+  "heldOutQuery": "who is my skip-level manager",
+  "expectedRecall": ["priya"]
+}

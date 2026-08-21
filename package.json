@@ -13,6 +13,11 @@
     "phase7-attack": "bun scripts/phase7-attack/run.ts",
     "phase8-attack": "bun scripts/phase8-attack/run.ts",
     "phase10-facts": "bun scripts/phase10-facts/run.ts",
+    "migrate": "bun scripts/migrate.ts",
+    "eval-retrieval": "bun scripts/eval-retrieval.ts",
+    "eval-query": "bun scripts/eval-query.ts",
+    "eval-locomo": "bun scripts/eval-locomo.ts",
+    "tune-retrieval": "bun scripts/tune-retrieval.ts",
     "iterate": "bun scripts/intent-iteration/run-e2e.ts",
     "intent": "bun scripts/intent-iteration/run-intent.ts"
   },

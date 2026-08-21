@@ -157,6 +157,24 @@ model FactRelation {
   @@index([sourceFactId])
   @@index([targetFactId])
 }
+
+// 13.5 — human-gated retrieval tuning proposal. tuneRetrievalParams aggregates
+// recent eval runs into bounded, evidence-linked param adjustments; a human
+// reviews and either rejects (status: rejected) or applies (runner writes the
+// new value into model-config.json and sets status: applied). Never auto-applied.
+model RetrievalTuningProposal {
+  id            String   @id @default(uuid())
+  param         String
+  oldValue      Float
+  newValue      Float
+  evidenceRunIds String[] @default([])
+  rationale     String
+  status        String   @default("pending")
+  createdAt     DateTime @default(now())
+  appliedAt     DateTime?
+
+  @@index([status, createdAt])
+}
 model RefreshToken {
   id        String    @id @default(uuid())
   userId    String

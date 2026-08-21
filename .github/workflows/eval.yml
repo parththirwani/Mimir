@@ -1,0 +1,51 @@
+name: eval-harness
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 5 * * *" # nightly: retrieval regression + response A/B
+    - cron: "0 4 * * 1" # weekly monday: tuning sweep
+
+jobs:
+  retrieval-gate:
+    runs-on: ubuntu-latest
+    # The eval harness needs the real pgvector Postgres (embedding <=> operator).
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Start pgvector Postgres
+        run: |
+          docker run -d \
+            -p 5434:5432 \
+            -e POSTGRES_USER=mimir \
+            -e POSTGRES_PASSWORD=mimir \
+            -e POSTGRES_DB=mimir \
+            pgvector/pgvector:pg16
+
+      - name: Run migrations (forward-only)
+        run: bun scripts/migrate.ts
+        env:
+          DATABASE_URL: postgres://mimir:mimir@localhost:5434/mimir
+
+      - name: Retrieval regression gate
+        # G4: FAIL-LOUD in both PR and nightly contexts. The nightly run exits
+        # non-zero on recall < 90% (same gate script, same exit path), which the
+        # CI failure surfaces as an alert. This is intentional and distinct from
+        # the PR gate: nightly catches drift from non-PR changes (upstream model
+        # swaps, config edits, provider degradation) that merge-time gating never
+        # exercises. It is NOT informational-only.
+        run: bun scripts/eval-retrieval.ts
+        env:
+          DATABASE_URL: postgres://mimir:mimir@localhost:5434/mimir
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CI: "true"
+
+      - name: Response-quality A/B
+        if: ${{ github.event_name == 'schedule' }}
+        run: bun scripts/eval-query.ts
+        env:
+          DATABASE_URL: postgres://mimir:mimir@localhost:5434/mimir
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CI: "true"
+        # Reuses the same Postgres; no container teardown needed within the job.

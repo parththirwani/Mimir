@@ -48,6 +48,12 @@ plan.md
 # Intent-iteration harness results (regenerated every run)
 scripts/intent-iteration/results/
 
+# Phase 13 eval-harness run logs (regenerated every run)
+results/eval-runs/
+
+# LoCoMo dataset (download on demand — ~2.8MB, gitignored)
+scripts/eval/locomo10.json
+
 # Prisma generated client
 packages/backend-core/src/generated/
 

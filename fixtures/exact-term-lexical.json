@@ -1,0 +1,15 @@
+{
+  "id": "exact-term-lexical",
+  "category": "exact-term",
+  "title": "Exact-term lexical recall vs embedding drift",
+  "description": "A distinctive exact token (key code) whose semantic near-neighbors are empty; only the 10.8 lexical tsquery side can surface it. Tests that lexical recall survives.",
+  "transcript": [
+    { "role": "user", "content": "Need to write down access info before the office move." },
+    { "role": "assistant", "content": "Go ahead, I'll store it." },
+    { "role": "user", "content": "My key card code for the west wing is XQ7K-429, and the spare gate PIN is 9012." },
+    { "role": "assistant", "content": "Recorded the access codes." },
+    { "role": "user", "content": "The moves team will need that west wing code on the day." }
+  ],
+  "heldOutQuery": "what is the XQ7K-429 access code",
+  "expectedRecall": ["XQ7K-429"]
+}

@@ -14,6 +14,10 @@ export interface FactHit {
   subject: string;
   fact: string;
   similarity: number;
+  // Which retrieval side(s) surfaced this hit: "vector" | "lexical" | "relation".
+  // Vec-only corpus change ripples here, so the eval harness can attribute a hit
+  // to the side that found it (13.5.1's split metric depends on this).
+  sources: string[];
 }
 
 // Top-K embedding search over ACTIVE facts for a conversation. The WHERE clause
@@ -40,14 +44,14 @@ export async function searchActiveFacts(
   const vecLiteral = `[${vec.join(",")}]`;
 
   try {
-    const rows = await prisma.$queryRaw<FactHit[]>`
+    const rows = await prisma.$queryRaw<{ id: string; subject: string; fact: string; similarity: number }[]>`
       SELECT id, subject, fact, 1 - (embedding <=> ${vecLiteral}::vector) AS similarity
       FROM "ExtractedFact"
       WHERE status = 'active' AND "conversationId" = ${conversationId} AND embedding IS NOT NULL
       ORDER BY embedding <=> ${vecLiteral}::vector
       LIMIT ${topK}
     `;
-    return rows;
+    return rows.map((r) => ({ ...r, sources: ["vector"] as string[] }));
   } catch (e) {
     getLogger().warn({ err: e, conversationId }, "fact search query failed; injecting nothing (fail-open)");
     return [];
@@ -153,16 +157,21 @@ export async function searchActiveFactsWithRelations(
     getLogger().warn({ err: e, conversationId }, "relation expansion failed (top-K only)");
   }
 
-  // ranked hits first (fused order), then relation neighbors; cap the total.
+  const vecSet = new Set(vectorIds);
+  const lexSet = new Set(lexicalIds);
   const out: FactHit[] = [];
   const seen = new Set<string>();
-  const push = (f: { id: string; subject: string; fact: string }) => {
+  const push = (f: { id: string; subject: string; fact: string }, fromRelation: boolean) => {
     if (out.length === FACT_INJECT_CAP || seen.has(f.id)) return;
     seen.add(f.id);
-    out.push({ id: f.id, subject: f.subject, fact: f.fact, similarity: 0 });
+    const sources: string[] = [];
+    if (vecSet.has(f.id)) sources.push("vector");
+    if (lexSet.has(f.id)) sources.push("lexical");
+    if (fromRelation) sources.push("relation");
+    out.push({ id: f.id, subject: f.subject, fact: f.fact, similarity: 0, sources });
   };
-  for (const f of rows) push(f);
+  for (const f of rows) push(f, false);
   const ranked = new Set(rows.map((r) => r.id));
-  for (const f of byId.values()) if (!ranked.has(f.id)) push(f);
+  for (const f of byId.values()) if (!ranked.has(f.id)) push(f, true);
   return out;
 }

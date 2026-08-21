@@ -1,0 +1,18 @@
+{
+  "id": "adversarial-supersede",
+  "category": "supersede",
+  "title": "Supersede-on-conflict excludes the stale fact",
+  "description": "Contradictory facts across messages; the held-out query must surface the ACTIVE (newest) value and never the superseded one. Tests the 10.6/10.1 conflict path and that retrieval filters status='active'.",
+  "transcript": [
+    { "role": "user", "content": "Setting up my move to Portland." },
+    { "role": "assistant", "content": "Great, I'll track the details." },
+    { "role": "user", "content": "My new rent in Portland is $1,200 a month starting December." },
+    { "role": "assistant", "content": "Noted the $1,200 rent." },
+    { "role": "user", "content": "Important update — the rent was actually raised, it's now $1,500 a month, still starting December." },
+    { "role": "assistant", "content": "Updated the rent figure." },
+    { "role": "user", "content": "Also I need to transfer utilities before I move in." }
+  ],
+  "heldOutQuery": "how much is my Portland rent now",
+  "expectedRecall": ["$1,500"],
+  "mustNotRecall": ["$1,200"]
+}
