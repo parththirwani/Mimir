@@ -18,7 +18,10 @@ let io: Server | null = null;
 // handshake with the access_token cookie and tracking the user's live sockets so
 // pub/sub can push to them.
 export function initSocket(server: HttpServer): void {
-  const origins = [cfg.WEB_APP_URL, "http://localhost:3000"].filter((o): o is string => Boolean(o));
+  // tauri://localhost — packaged desktop app origin (Phase 12).
+  const origins = [cfg.WEB_APP_URL, "http://localhost:3000", "tauri://localhost"].filter(
+    (o): o is string => Boolean(o),
+  );
   io = new Server(server, { cors: { origin: origins, credentials: true } });
 
   io.use(async (socket, next) => {

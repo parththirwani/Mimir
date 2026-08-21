@@ -12,6 +12,9 @@
       "dependsOn": ["^build"],
       "outputs": []
     },
+    "@mimir/desktop#build": {
+      "dependsOn": ["@mimir/web#build", "^build"]
+    },
     "lint": {
       "dependsOn": ["^lint"]
     },

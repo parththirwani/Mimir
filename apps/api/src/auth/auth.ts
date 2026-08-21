@@ -34,19 +34,36 @@ const prisma = getPrismaClient();
 
 export const authRouter: Router = Router();
 
-function setAuthCookies(res: Response, accessToken: string, refreshToken: string): void {
+// Desktop (Phase 12): the packaged Tauri webview is cross-site (tauri://localhost)
+// to the API, so SameSite=Lax cookies won't ride its fetches. Loosen to SameSite=None
+// ONLY when the request's Origin is genuinely the packaged webview — Origin is set by
+// the browser, not spoofable from JS (a custom header would be trivially forged).
+// secure follows NODE_ENV, and that's a hard constraint, not a choice: spec-compliant
+// engines (WebKitGTK included) reject SameSite=None cookies that lack Secure, and
+// Secure cookies are never set/sent over plain http. So the desktop cookie path works
+// ONLY against an https API — the rung-1 packaged verification must run against the
+// https deployment, never a local http one. Dev never hits this branch anyway (devUrl
+// localhost:3000 is same-site to localhost:4000, so Lax suffices there).
+// ponytail: SameSite=None weakens CSRF standing for the desktop cookie; it's the
+// cheapest fix that works, revisit if the webview cookie story changes.
+function isDesktopOrigin(req: Request): boolean {
+  return req.headers.origin === "tauri://localhost";
+}
+
+function setAuthCookies(req: Request, res: Response, accessToken: string, refreshToken: string): void {
+  const desktop = isDesktopOrigin(req);
   const secure = cfg.NODE_ENV === "production";
   res.cookie("access_token", accessToken, {
     httpOnly: true,
     secure,
-    sameSite: "lax",
+    sameSite: desktop ? "none" : "lax",
     path: "/",
     maxAge: ACCESS_TOKEN_TTL_SECONDS * 1000,
   });
   res.cookie("refresh_token", refreshToken, {
     httpOnly: true,
     secure,
-    sameSite: "lax",
+    sameSite: desktop ? "none" : "lax",
     path: REFRESH_TOKEN_COOKIE_PATH,
     maxAge: REFRESH_TOKEN_TTL_SECONDS * 1000,
   });
@@ -60,12 +77,12 @@ async function createRefreshToken(userId: string): Promise<string> {
   return token;
 }
 
-async function issueTokens(res: Response, userId: string): Promise<void> {
+async function issueTokens(req: Request, res: Response, userId: string): Promise<void> {
   const [accessToken, refreshToken] = await Promise.all([
     signAccessToken(userId, cfg.JWT_SECRET),
     createRefreshToken(userId),
   ]);
-  setAuthCookies(res, accessToken, refreshToken);
+  setAuthCookies(req, res, accessToken, refreshToken);
 }
 
 async function loginRetryAfterSeconds(ip: string, email: string): Promise<number | null> {
@@ -98,7 +115,7 @@ authRouter.post("/register", async (req, res) => {
   }
   const passwordHash = await Bun.password.hash(password, { algorithm: "bcrypt", cost: BCRYPT_COST });
   const user = await prisma.user.create({ data: { email, passwordHash } });
-  await issueTokens(res, user.id);
+  await issueTokens(req, res, user.id);
   getLogger().info({ userId: user.id }, "user registered");
   await trackEvent(user.id, "auth_register", { provider: "email" });
   res.status(201).json({ user: { id: user.id, email: user.email } });
@@ -124,7 +141,7 @@ authRouter.post("/login", async (req, res) => {
     res.status(401).json({ error: { code: "INVALID_CREDENTIALS", message: "Invalid email or password" } });
     return;
   }
-  await issueTokens(res, user.id);
+  await issueTokens(req, res, user.id);
   getLogger().info({ userId: user.id }, "user logged in");
   await trackEvent(user.id, "auth_login", { provider: "email" });
   res.json({ user: { id: user.id, email: user.email } });
@@ -151,7 +168,7 @@ authRouter.post("/refresh", async (req, res) => {
     return;
   }
   await prisma.refreshToken.update({ where: { id: stored.id }, data: { revokedAt: new Date() } });
-  await issueTokens(res, stored.userId);
+  await issueTokens(req, res, stored.userId);
   getLogger().info({ userId: stored.userId }, "refresh token rotated");
   res.json({ ok: true });
 });
@@ -226,7 +243,7 @@ authRouter.get("/google/callback", (req, res, next) => {
         res.status(502).json({ error: { code: "OAUTH_ERROR", message: "Google authentication failed" } });
         return;
       }
-      issueTokens(res, user.id)
+      issueTokens(req, res, user.id)
         .then(async () => {
           getLogger().info({ userId: user.id }, "user logged in via google");
           await trackEvent(user.id, "auth_login", { provider: "google" });

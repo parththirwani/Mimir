@@ -57,7 +57,11 @@ app.use(express.json());
 
 // CORS for the static-export web app (different origin/port). Reflect only
 // known origins; always allow credentials (cookie-based auth).
-const allowedOrigins = new Set([config.WEB_APP_URL, "http://localhost:3000"].filter(Boolean));
+// tauri://localhost — packaged desktop app origin (Phase 12), required for any
+// desktop auth to work at all.
+const allowedOrigins = new Set(
+  [config.WEB_APP_URL, "http://localhost:3000", "tauri://localhost"].filter(Boolean),
+);
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && allowedOrigins.has(origin)) {
