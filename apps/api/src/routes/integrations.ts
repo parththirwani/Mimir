@@ -8,7 +8,7 @@ const prisma = getPrismaClient();
 const store = prisma.integrationConnection;
 const gmailCallbackUrl = `${cfg.PUBLIC_API_URL ?? cfg.WEB_APP_URL ?? ""}/api/v1/integrations/gmail/callback`;
 
-// 5.7.3 — the managed-integration roster, all driven through the same
+// The managed-integration roster, all driven through the same
 // ConnectionProvider abstraction. A settings page renders this list.
 const ROSTER = [
   { key: GMAIL_INTEGRATION, label: "Gmail" },
@@ -142,7 +142,7 @@ integrationsRouter.post("/integrations/gmail/disconnect", requireAuth, async (re
 });
 
 // GET /api/v1/integrations — the full roster with per-provider connected status
-// (5.7.3: one settings page, not one page per provider). Reconciles each
+// (one settings page, not one page per provider). Reconciles each
 // non-connected entry against its provider so this panel agrees with the chat
 // page's per-provider status route (both treat only status === "connected" as
 // connected — a stale "expired" row is healed, not shown as disconnected).
@@ -202,7 +202,7 @@ integrationsRouter.post("/integrations/:providerKey/connect", requireAuth, async
 
 // POST /api/v1/integrations/:providerKey/disconnect — revoke any roster provider.
 // Does NOT require NANGO_SECRET_KEY: revoke() drops the local row even if the
-// Nango call fails (best-effort upstream deletion).
+// Nango call fails.
 integrationsRouter.post("/integrations/:providerKey/disconnect", requireAuth, async (req, res) => {
   const userId = req.userId;
   const key = String(req.params.providerKey);

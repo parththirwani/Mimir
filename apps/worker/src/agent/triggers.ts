@@ -6,19 +6,12 @@ import { evaluateTrigger } from "./trigger-eval.js";
 
 const prisma = getPrismaClient();
 
-// Trigger system (4.11): a 1-min scheduler tick evaluates every enabled trigger's
+// Trigger system: a 1-min scheduler tick evaluates every enabled trigger's
 // natural-language criteria against the owning agent's current integration data
 // with a cheap model. On a match the agent job is enqueued with
 // trigger:"trigger_fired"; the owning agent then RE-CHECKS the criteria at fire
-// time (4.11.6) before acting. Mismatches there are logged but never surfaced.
+// time before acting. Mismatches there are logged but never surfaced.
 
-// ponytail: every-trigger-every-minute is the plan's v1. A matching trigger used
-// to re-fire on every tick for as long as its criteria held (the Aug 17
-// duplicate-flood incident). Now gated by TRIGGER_COOLDOWN_MS on the already-
-// stamped lastFiredAt. The remaining ceiling: the sweep re-fetches integration
-// data per trigger per tick — cheap now, but a per-trigger `schedule` cadence is
-// the upgrade path once volume bites. Cooldown moved to config.schema.ts if it
-// ever needs to vary per deployment.
 export const TRIGGER_TICK_CRON = "* * * * *";
 
 // Minimum gap between consecutive fires of the same trigger. Cooldown beats a

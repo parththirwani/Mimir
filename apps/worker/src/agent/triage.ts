@@ -1,10 +1,10 @@
 import { callOpenRouter, getLogger, loadPrompt, trackModelCall } from "@mimir/backend-core";
 import type { LlmMessage } from "@mimir/shared-types";
 
-// 6.5.5 — triage classification for the unwatched-inbox surfacing (the monitor).
-// Deliberately STRICTER than 4.7's async filter: nothing asked for this message
+// Triage classification for the unwatched-inbox surfacing (the monitor).
+// Deliberately STRICTER than the async filter: nothing asked for this message
 // to be watched, so the default bar is false — only a clear urgent/actionable
-// signal surfaces. Uses its own cheap model key (triage_classification, 10.4.3).
+// signal surfaces. Uses its own cheap model key (triage_classification).
 export interface TriageVerdict {
   surface: boolean;
   rationale: string;
@@ -17,10 +17,10 @@ export interface TriageVerdict {
 const TRIAGE_SYSTEM = loadPrompt("filter_email.md");
 
 // Shared parser for the prompt-shaped {surface, rationale, category} verdicts
-// used by BOTH the async filter (4.7) and triage (6.5.5). Safe default: a
-// missing/incorrect surface or unparseable output does NOT surface. `ok` is
-// false when the model's output wasn't parseable — callers that need error
-// semantics (the async filter must not durable-claim) branch on it.
+// used by BOTH the async filter and triage. Safe default: a missing/incorrect
+// surface or unparseable output does NOT surface. `ok` is false when the
+// model's output wasn't parseable — callers that must not durable-claim on
+// error branch.
 export function parseSurfaceVerdict(raw: string): {
   surface: boolean;
   rationale: string;

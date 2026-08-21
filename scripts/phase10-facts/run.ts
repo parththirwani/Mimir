@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import { loadEnv } from "../intent-iteration/_env.js";
 import { getPrismaClient, getLogger, callOpenRouter } from "@mimir/backend-core";
 
-// Phase 10 fact layer — live-LLM verification (not mocks). Drives the REAL
-// extraction write path (extractFacts) and retrieval path (searchActiveFacts)
-// against the OpenRouter models from model-config.json and a real multi-message
-// conversation seeded in Postgres. Confirms three report asks:
-//   1. extraction write path works over a real multi-message conversation
+// Fact layer live-LLM verification (not mocks). Drives the REAL extraction
+// write path (extractFacts) and retrieval path (searchActiveFacts) against the
+// OpenRouter models from model-config.json and a real multi-message conversation
+// seeded in Postgres. Confirms three report asks:
+//   1. extraction writes over a real multi-message conversation
 //   2. retrieval surfaces a specific fact the narrative summary would drop
 //   3. supersede path works with a real contradicting-fact case
 // Run: bun run phase10-facts   (needs OPENROUTER_API_KEY, DATABASE_URL in .env)

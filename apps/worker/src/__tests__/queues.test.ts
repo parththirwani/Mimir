@@ -21,17 +21,26 @@ async function poll<T>(fn: () => Promise<T>, ok: (t: T) => boolean, timeoutMs = 
   }
 }
 
-afterAll(async () => {
-  await Promise.all([
-    ...workers.map((w) => w.close()),
-    agentJobs.close(),
-    onceJobs.close(),
-    agentTriggers.close(),
-    webhookProcessing.close(),
-    failedAgentJobs.close(),
-    emailJobs.close(),
-  ]);
-});
+afterAll(
+  async () => {
+    await Promise.all([
+      // close(force=true): teardown must not wait on an in-flight job. pool().close()
+      // without force blocks until the active job finishes — a slow email/LLM job in
+      // another of the 27 suite files made this hook exceed its budget. Every test
+      // here already polls its job to completion before afterAll runs, so force is safe.
+      ...workers.map((w) => w.close(true)),
+      agentJobs.close(),
+      onceJobs.close(),
+      agentTriggers.close(),
+      webhookProcessing.close(),
+      failedAgentJobs.close(),
+      emailJobs.close(),
+    ]);
+  },
+  // Closing several BullMQ workers+queues against live Redis/DB can exceed the
+  // 5s default hook budget — 30s is generous headroom.
+  30_000,
+);
 
 describe("queues function in isolation", () => {
   test("agent-jobs worker processes an enqueued job", async () => {

@@ -3,12 +3,12 @@ import { getConfig, getLogger, getPrismaClient, type InputJsonValue } from "@mim
 import { jwtVerify, createRemoteJWKSet } from "jose";
 import { Router } from "express";
 
-// Webhook ingress (6.1) — Gmail/GitHub/Slack. Every endpoint:
+// Webhook ingress — Gmail/GitHub/Slack. Every endpoint:
 //  1. verifies the provider signature (via injected fn) BEFORE any DB write,
 //  2. rejects stale payloads (replay protection, 5-min),
 //  3. INSERT ... ON CONFLICT (provider, externalId) DO NOTHING into WebhookEvent,
-//     then the worker's webhook relay (6.1.4) fans out to matching agents.
-// The worker owns job dispatch (mirrors the 4.4 outbox pattern, so the API never
+//     then the worker's webhook relay fans out to matching agents.
+// The worker owns job dispatch (mirrors the outbox pattern, so the API never
 // needs a BullMQ dependency); WebhookEvent's unique (provider, externalId) IS the
 // idempotency mechanism — a duplicate delivery is a no-op insert.
 
@@ -17,14 +17,14 @@ const WEBHOOK_REPLAY_MAX_AGE_MS = 5 * 60 * 1000;
 
 // ---- Signature verification primitives (pure, unit-testable) ----
 
-// GitHub (6.1.2): HMAC-SHA256 of the raw body, sent as `sha256=<hex>`.
+// GitHub: HMAC-SHA256 of the raw body, sent as `sha256=<hex>`.
 export function verifyGithubSignature(rawBody: string, signature: string | undefined, secret: string): boolean {
   if (!signature) return false;
   const expected = `sha256=${createHmac("sha256", secret).update(rawBody, "utf8").digest("hex")}`;
   return safeEqual(expected, signature);
 }
 
-// Slack (6.1.2): versioned HMAC over `v0:<timestamp>:<rawBody>`; caller also
+// Slack: versioned HMAC over `v0:<timestamp>:<rawBody>`; caller also
 // checks the request timestamp for freshness.
 export function slackSignature(secret: string, timestamp: string, rawBody: string): string {
   return createHmac("sha256", secret).update(`v0:${timestamp}:${rawBody}`, "utf8").digest("hex");
@@ -55,13 +55,13 @@ export function gmailExternalId(parsed: { historyId?: string; emailAddress?: str
   return `pubsub:${createHmac("sha256", "gmail").update(decoded).digest("hex")}`;
 }
 
-// Replay protection (6.1.3): provider timestamp older than 5 minutes is rejected.
+// Replay protection: provider timestamp older than 5 minutes is rejected.
 export function isStale(timestampMs: number, now: number = Date.now(), maxAgeMs: number = WEBHOOK_REPLAY_MAX_AGE_MS): boolean {
   return !Number.isFinite(timestampMs) || now - timestampMs > maxAgeMs;
 }
 
-// Google Cloud Pub/Sub (6.1.2): PushMessage auth is a Google-signed JWT in the
-// `Authorization: Bearer` header whose `aud` equals the push endpoint URL. We
+// Google Cloud Pub/Sub: PushMessage auth is a Google-signed JWT in the
+// `Authorization: Bearer` header whose `aud` equals the public endpoint URL. We
 // verify against Google's published certs. Injectable for tests.
 export interface GoogleVerifyFn {
   (token: string, audience: string): Promise<boolean>;
@@ -108,7 +108,7 @@ export function webhooksRouter(opts: {
       res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "missing message.data" } });
       return;
     }
-    // Replay protection (6.1.3): Pub/Sub PushMessage carries `publishTime`; reject
+    // Replay protection: Pub/Sub PushMessage carries `publishTime`; reject
     // a push that Google published more than 5 minutes ago.
     if (isStale(Date.parse(message.publishTime ?? ""))) {
       res.status(401).json({ error: { code: "UNAUTHORIZED", message: "stale Google Push message" } });

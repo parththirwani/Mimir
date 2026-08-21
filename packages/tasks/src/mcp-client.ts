@@ -1,6 +1,6 @@
 import { ToolError } from "./types.js";
 
-// Minimal MCP streamable-HTTP client (5.8). User-supplied servers are outside
+// Minimal MCP streamable-HTTP client. User-supplied servers are outside
 // our control, so error mapping stays generic: transport failures ->
 // ToolError("connection"), RPC/tool failures -> ToolError("execution"). No
 // bespoke per-server mapping.
@@ -51,9 +51,6 @@ async function rpc(
   const ct = res.headers.get("content-type") ?? "";
   let json: { result?: unknown; error?: { code?: number; message?: string } };
   if (ct.includes("text/event-stream")) {
-    // ponytail: streamable-HTTP can answer with SSE; read the first `data:` line
-    // as the JSON-RPC message. True multi-message streaming is the known ceiling
-    // until a server actually needs it.
     const text = await res.text();
     const dataLine = text.split("\n").find((l) => l.startsWith("data:"));
     json = JSON.parse((dataLine ?? text).replace(/^data:\s*/, "")) as typeof json;

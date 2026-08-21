@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { loadEnv } from "../intent-iteration/_env.js";
 import { callOpenRouter, getPrismaClient, getLogger } from "@mimir/backend-core";
 
-// Phase 8 attack harness — 25 real-LLM prompts aimed at breaking the planner
+// Attack harness — 25 real-LLM prompts aimed at breaking the planner
 // (the plan-first complex branch). Each drives `planTask` (the production
 // function, same prompt + framing + fail-open) and checks it held the planner's
 // invariants under attack:

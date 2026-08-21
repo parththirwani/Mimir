@@ -9,10 +9,10 @@ import { triggerTools } from "./trigger-tools.js";
 
 const prisma = getPrismaClient();
 
-// The per-user task roster (4.9): what the execution agent can invoke beyond the
+// The per-user task roster: what the execution agent can invoke beyond the
 // system tools (wait/draft). browser is always available; notion is available
-// when the user has a connected Notion; registered MCP servers (5.8) expose each
-// of their tools as a dynamic Task. trigger CRUD (4.11.3) is always available and
+// when the user has a connected Notion; registered MCP servers expose each
+// of their tools as a dynamic Task. trigger CRUD is always available and
 // scoped to the calling agent, EXCEPT for one-shot runs (executeOnce) which have
 // no agent to scope to — pass includeTriggerTools: false there. The LLM sees the
 // union via toLlmTool.

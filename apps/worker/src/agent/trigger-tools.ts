@@ -1,10 +1,10 @@
 import { getPrismaClient } from "@mimir/backend-core";
 import type { Task, ToolContext } from "@mimir/tasks";
 
-// 4.11.3 — agent-facing Trigger CRUD exposed to Execution Agents (not the
-// Interaction Agent). Ownership is scoped to the calling agent (4.11.2): every
-// tool filters/creates on that agentId, so one agent can't touch another's
-// triggers. The 1-min scheduler tick (4.11.4) then fires matching triggers.
+// Agent-facing Trigger CRUD exposed to Execution Agents (not the Interaction
+// Agent). Ownership is scoped to the calling agent: every tool filters/creates
+// on that agentId, so one agent can't touch another's triggers. The 1-min
+// scheduler tick then fires matching triggers.
 const prisma = getPrismaClient();
 
 function scope(ctx: ToolContext): string {

@@ -73,8 +73,6 @@ export function llmConfigFor(useCase: string): LlmUseCaseConfig {
   return entry;
 }
 
-// ponytail: no streaming SDK — plain fetch, retry on 5xx/timeout (maxAttempts in
-// model-config.json). Swap in an SDK when true streaming or per-call backpressure arrive.
 export interface ToolCall {
   id: string;
   type: string;
@@ -243,8 +241,6 @@ async function singleCall(
   };
 }
 
-// ponytail: best-effort cost lookup; returns 0 on any failure. No retry —
-// callers call this fire-and-forget. Swap to the OutboxEvent table if drops matter.
 export async function fetchGenerationCost(generationId: string): Promise<number> {
   const { url, timeoutMs } = loadConfig().transport;
   const apiKey = getConfig().OPENROUTER_API_KEY;

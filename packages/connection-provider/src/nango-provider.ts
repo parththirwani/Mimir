@@ -15,17 +15,12 @@ export interface NangoProviderOptions {
   store: IntegrationConnectionStore;
   // Which Nango integration this provider drives. Defaults to Gmail; pass
   // NOTION_INTEGRATION etc. to reuse the same ConnectionProvider for other
-  // integrations (5.7). Also feeds the local IntegrationConnection.provider row.
+  // integrations. Also feeds the local IntegrationConnection.provider row.
   providerKey?: string;
   // OAuth user_scopes requested at connect time (Nango's integrations_config_defaults).
   connectScopes?: string;
 }
 
-// ponytail: the modern Nango SDK dropped createConnection — connect sessions
-// create a Nango-generated connectionId (NOT userId), so the local
-// IntegrationConnection row is the userId -> connectionId mapping. The plan's
-// literal `connectionId = userId` was written for the deprecated classic flow;
-// this resolves against the installed SDK, same interface, same behavior.
 export class NangoConnectionProvider implements ConnectionProvider {
   private readonly secretKey?: string;
   private readonly host?: string;
@@ -63,8 +58,6 @@ export class NangoConnectionProvider implements ConnectionProvider {
       tags: { end_user_id: userId },
       allowed_integrations: [this.providerKey],
       ...(defaults ? { integrations_config_defaults: defaults } : {}),
-      // ponytail: switch Gmail to `gmail.compose gmail.readonly` if/when a reconnect
-      // flow re-consents existing users, to drop modify's delete/label power.
     });
     return { sessionToken: data.token, authorizationUrl: data.connect_link };
   }
@@ -154,8 +147,8 @@ export class NangoConnectionProvider implements ConnectionProvider {
     try {
       await this.nango().deleteConnection(this.providerKey, row.connectionId);
     } catch {
-      // ponytail: best-effort — the local row is still removed so the UI flips to
-      // disconnected even if Nango's connection is already gone.
+      // Local row is still removed so the UI flips to disconnected even if the
+      // upstream connection is already gone.
     }
     await this.store.delete({ where: { id: row.id } });
   }
@@ -165,9 +158,6 @@ export class NangoConnectionProvider implements ConnectionProvider {
     return row?.connectionId ?? null;
   }
 
-  // ponytail: one row per (userId, provider) via find-then-write. A concurrent
-  // double-callback could race to create a second row; add @@unique([userId,
-  // provider]) + a real upsert if that ever happens.
   private async upsertConnection(userId: string, nangoConnectionId: string, status: string): Promise<void> {
     const existing = await this.store.findFirst({ where: { userId, provider: this.providerKey } });
     if (existing) await this.store.update({ where: { id: existing.id }, data: { connectionId: nangoConnectionId, status } });

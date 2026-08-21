@@ -3,10 +3,9 @@ import { getLogger } from "./logger.js";
 import { callEmbeddings } from "./openrouter.js";
 import { getPrismaClient } from "./prisma.js";
 
-// Phase 10 fact-layer read path (10.1.3). Lives in backend-core (not the worker)
-// so the api can inject retrieved facts into the chat reply context. The write
-// path (extractFacts/deleteFact) stays worker-only in apps/worker/src/agent/
-// fact-extraction.ts.
+// Lives in backend-core (not the worker) so the api can inject retrieved facts
+// into the chat reply context. The write path (extractFacts/deleteFact) stays
+// worker-only in apps/worker/src/agent/fact-extraction.ts.
 
 const prisma = getPrismaClient();
 

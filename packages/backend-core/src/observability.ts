@@ -19,8 +19,6 @@ const cfg = getConfig();
 // Application entrypoints create request/job spans manually with this tracer:
 // the http/express OTel instrumentations silently no-op under Bun (the runtime
 // used here and in the prod images), so relying on them yields zero HTTP spans.
-// Request-level spans are all the 1.2.4 dashboard needs; add route-level spans
-// (or a working http instrumentation) if per-route granularity is required.
 export const tracer = trace.getTracer("mimir");
 
 const sdk = new NodeSDK({
@@ -29,8 +27,6 @@ const sdk = new NodeSDK({
     [ATTR_SERVICE_NAMESPACE]: "mimir",
     [ATTR_DEPLOYMENT_ENVIRONMENT_NAME]: cfg.NODE_ENV ?? "development",
   }),
-  // ponytail: no Grafana creds -> console spans so traces are still visible in dev.
-  // Swap is env-var-only (set OTEL_EXPORTER_OTLP_ENDPOINT) once creds exist.
   traceExporter: cfg.OTEL_EXPORTER_OTLP_ENDPOINT
     ? new OTLPTraceExporter({
         url: tracesUrl(cfg.OTEL_EXPORTER_OTLP_ENDPOINT),

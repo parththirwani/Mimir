@@ -29,14 +29,14 @@ export const configSchema = z.object({
   OTEL_EXPORTER_OTLP_HEADERS: z.string().min(1).optional(),
   OTEL_SERVICE_NAME: z.string().min(1).optional(),
   NODE_ENV: z.string().min(1).optional(),
-  // Webhook verification secrets (6.1). Absent => the corresponding endpoint
+  // Webhook verification secrets. Absent => the corresponding endpoint
   // returns 503 NOT_CONFIGURED (feature-gated per provider).
   GITHUB_WEBHOOK_SECRET: z.string().min(1).optional(),
   SLACK_SIGNING_SECRET: z.string().min(1).optional(),
-  // Gmail push (6.2): the public base URL of the api so Pub/Sub can resolve the
+  // Gmail push: the public base URL of the api so Pub/Sub can resolve the
   // push endpoint (also the JWT `aud` claim Google signs PushMessage tokens for).
   PUBLIC_API_URL: z.string().min(1).optional(),
-  // GCP service account used to re-register gmail watch() (6.2.2).
+  // GCP service account used to re-register gmail watch().
   GOOGLE_WATCH_CLIENT_EMAIL: z.string().min(1).optional(),
   GOOGLE_WATCH_PRIVATE_KEY: z.string().min(1).optional(),
   GOOGLE_PUBSUB_TOPIC: z.string().min(1).optional(),
@@ -45,9 +45,9 @@ export const configSchema = z.object({
   // transport. Skipped when unset.
   CONNECTION_CANARY_USER_ID: z.string().min(1).optional(),
   // Mail poll — fixed-cadence inbox sweep. Env override keeps the cost/latency
-  // tradeoff tunable without a redeploy (default: every minute, per 6.5.3).
+  // tradeoff tunable without a redeploy (default: every minute).
   MAIL_POLL_CRON: z.string().default("* * * * *"),
-  // Web Push (7.1): VAPID keys. Absent => push delivery is disabled and events
+  // Web Push: VAPID keys. Absent => push delivery is disabled and events
   // only reach users with a live socket (message stays in the thread otherwise).
   VAPID_PUBLIC_KEY: z.string().min(1).optional(),
   VAPID_PRIVATE_KEY: z.string().min(1).optional(),

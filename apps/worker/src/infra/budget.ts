@@ -1,11 +1,10 @@
 import { BROWSER_DAILY_MINUTES_CAP, getLogger } from "@mimir/backend-core";
 import { redis } from "./redis.js";
 
-// Browser budget stub (5.6): hosted browser sessions cost real money per minute,
-// but Phase 10's real UsageRecord billing doesn't exist yet. A per-user-per-day
-// Redis counter with a hard cap prevents a runaway loop from producing a
-// surprise bill in the meantime. Same Redis-now->Postgres-later pattern as the
-// mail-poll dedup set. Swap for UsageRecord at Phase 10.
+// Hosted browser sessions cost real money per minute, but the real billing
+// isn't wired up yet. A per-user-per-day Redis counter with a hard cap
+// prevents a runaway loop from producing a surprise bill in the interim.
+// Same Redis-now->Postgres-later pattern as the mail-poll dedup set.
 
 const KEY = (userId: string, day: string) => `browser-minutes:${userId}:${day}`;
 

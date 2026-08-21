@@ -1,12 +1,12 @@
-// Minimal Tauri shell (7.2/9 + 12): wraps the @mimir/web static export in a
-// native window with tray + native notifications. The web app's own service
-// worker drives push; this plugin surfaces OS notifications when the window is
-// hidden. Notification permission is requested by the web app's Settings toggle
-// — never auto-enabled at launch.
+// Minimal Tauri shell: wraps the @mimir/web static export in a native window
+// with tray + native notifications. The web app's own service worker drives
+// push; this plugin surfaces OS notifications when the window is hidden.
+// Notification permission is requested by the web app's Settings toggle — never
+// auto-enabled at launch.
 //
-// Tray behavior (12.2): close = hide to tray, never quit; Quit lives only on
-// the tray menu and calls app.exit(), which terminates the process directly —
-// it does NOT emit CloseRequested, so hide-on-close can't swallow a real quit.
+// Tray: close = hide to tray, never quit; Quit lives only on the tray menu and
+// calls app.exit(), which terminates the process directly — it does NOT emit
+// CloseRequested, so hide-on-close can't swallow a real quit.
 
 use tauri::Manager;
 use tauri_plugin_autostart::ManagerExt;
@@ -33,8 +33,8 @@ pub fn run() {
                 .build(),
         )
         .on_window_event(|window, event| {
-            // Close → hide to tray (12.2.1). A real quit goes through the tray
-            // menu's app.exit(), which never reaches this handler.
+            // Close → hide to tray. A real quit goes through the tray menu's
+            // app.exit(), which never reaches this handler.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
@@ -55,10 +55,6 @@ pub fn run() {
             let autostart_item = autostart.clone();
 
             TrayIconBuilder::with_id("main")
-                // ponytail: 32x32 png bytes directly — default_window_icon() is a
-                // 1024x1024 RGBA buffer that the GTK tray backend rejects ("wrong
-                // data size"); tray wants a small square. Upgrade to a HiDPI icon
-                // set if the tray looks blurry on hidpi screens.
                 .icon(tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))?)
                 .menu(&menu)
                 .show_menu_on_left_click(true)

@@ -28,8 +28,7 @@ import { parseSurfaceVerdict } from "./triage.js";
 const prisma = getPrismaClient();
 
 // Context = contextSummary (if set) + last N AgentEvents, capped at
-// AGENT_CONTEXT_MAX_TOKENS. Rough token estimate (chars / 4) — good enough for a
-// budget cap; exact tokenizer is unnecessary until the cap measurably bites.
+// AGENT_CONTEXT_MAX_TOKENS. Rough token estimate (chars / 4) for the budget cap.
 async function loadContext(agentId: string, context?: string): Promise<{ systemNote: string; history: LlmMessage[] }> {
   const agent = await prisma.agent.findUnique({ where: { id: agentId } });
   if (!agent) throw new Error(`agent ${agentId} not found`);
@@ -106,8 +105,6 @@ export async function foldOldEvents(agentId: string): Promise<void> {
   getLogger().info({ agentId, folded: foldable.length }, "older agent events folded into contextSummary");
 }
 
-// ponytail: folding is best-effort bookkeeping — a failure here must never flip
-// an already-successful run to failed (the user-visible outcome is committed).
 async function safeFold(agentId: string): Promise<void> {
   try {
     await foldOldEvents(agentId);
@@ -116,7 +113,7 @@ async function safeFold(agentId: string): Promise<void> {
   }
 }
 
-// Provider failures that exhaust their retry cap (5.4.1) fold the agent quietly
+// Provider failures that exhaust their retry cap fold the agent quietly
 // so background watches don't spam. But a run the USER is waiting on must not
 // die in silence — surface the cause so they get an answer even when the answer
 // is "this failed". Distinct from the ConnectionError reconnect nudge (no
@@ -163,7 +160,7 @@ async function surfaceProviderFailure(
   }
 }
 
-// A plan that exhausted its replan cap (8.3.2) must never die silently for a run
+// A plan that exhausted its replan cap must never die silently for a run
 // the user is waiting on — surface the partial progress (if any) plus the
 // explicit failure, mirroring the provider-failure path (bypasses the noise
 // filter: a failure is not spam). Called only for user-triggered runs; the
@@ -215,17 +212,17 @@ interface FilterVerdict {
 // A direct user request is always surfaced — the user asked, so the answer is
 // never spam. The noise filter only gates background/triggered runs (scheduled
 // polls, webhooks), which can otherwise spam without a human in the loop. An
-// explicitly-confirmed draft re-run (4.10) is also user-approval-driven, so its
+// explicitly-confirmed draft re-run is also user-approval-driven, so its
 // outcome surfaces rather than being silently filtered.
 export function userTriggered(trigger: string | undefined): boolean {
   return trigger === "user_message" || trigger === "draft_confirmed";
 }
 
-// The execution agent's mid-completion tool roster (4.7.4 wait, 4.10 draft).
-// Registered integration Tasks (4.9) get appended here later; the two system
-// tools are terminal — calling one ends the turn. wait is also offered to
-// one-shot runs (executeOnce); draft is NOT — a draft's confirmation flow must
-// resolve back to an Agent, and a one-shot run has no Agent.
+// The execution agent's mid-completion tool roster. Registered integration
+// Tasks get appended here later; the two system tools are terminal — calling
+// one ends the turn. wait is also offered to one-shot runs (executeOnce);
+// draft is NOT — a draft's confirmation flow must resolve back to an Agent,
+// and a one-shot run has no Agent.
 export const waitSystemTool: LlmTool = {
   type: "function",
   function: {
@@ -266,11 +263,6 @@ export type AgentToolOutcome =
 // regenerates the same answer with different phrasing, which a string compare
 // misses) — the repeat is not surfaced again. Compared against the last few
 // surfaced events so a genuinely new finding isn't blocked by an older one.
-//
-// ponytail: the original 0.85 token-overlap heuristic missed real rewordings —
-// the Aug 17 incident pairs measured 0.61-0.85 — so this delegates to a cheap
-// judge model. Upgrade path: a fine-tuned classifier once dedup volume
-// justifies the training effort.
 export function parseDedupVerdict(raw: string): boolean {
   try {
     const json = JSON.parse(raw.replace(/```json|```/g, "").trim()) as { duplicate?: unknown };
@@ -340,8 +332,8 @@ export async function handleAgentTool(
 ): Promise<AgentToolOutcome> {
   const name = toolCall.function?.name ?? "";
   if (name === "wait") {
-    // 4.7.4 — silent discard, logged as AgentEvent{discarded}. Deliberately
-    // bypasses the async filter (4.7.1-3): the model already decided it's noise.
+    // Silent discard, logged as AgentEvent{discarded}. Deliberately bypasses
+    // the async filter: the model already decided it's noise.
     await prisma.agentEvent.create({
       data: {
         agentId,
@@ -357,7 +349,7 @@ export async function handleAgentTool(
     return { outcome: "wait" };
   }
   if (name === "draft") {
-    // 4.10 — verbatim content straight into the thread, no persona rewrite. The
+    // Verbatim content straight into the thread, no persona rewrite. The
     // pending toolCalls row doubles as the audit trail + confirmation hook (the
     // API's pending-draft resolver drives send/cancel on the user's next message).
     const args = parseToolArgs(toolCall);
@@ -404,7 +396,7 @@ export async function handleAgentTool(
   throw new Error(`unknown agent tool: ${name}`);
 }
 
-// The capped multi-turn tool loop (4.9): call the model, execute the tool calls
+// The capped multi-turn tool loop: call the model, execute the tool calls
 // it makes (registered Tasks + system tools), and re-call with the accumulated
 // history. Shared by executeAgent (persistent Agent runs) and executeOnce
 // (one-shot runs with NO Agent row) so the loop is implemented once. Terminal
@@ -522,8 +514,8 @@ export interface OneShotJobData {
   userId: string;
   conversationId: string;
   content: string;
-  // Phase 7 complexity gate: the classification call tags one_shot work simple|complex;
-  // complex one-shot runs route through the reflector. Absent => simple.
+  // The classification call tags one_shot work simple|complex; complex one-shot
+  // runs route through the reflector. Absent => simple.
   complexity?: "simple" | "complex";
 }
 
@@ -575,7 +567,7 @@ export async function executeOnce(job: Job, opts?: { caller?: LlmCaller }): Prom
     return runToolLoop({ messages: attemptMessages, tools, userId, availableTasks }, onTerminalTool, caller);
   };
 
-  // Phase 7: a complex one-shot runs through the generator/evaluator loop. The
+  // A complex one-shot runs through the generator/evaluator loop. The
   // evaluator's task is the rewritten query (job.data.content). No agentId —
   // reflection metadata stays in-memory (no ReflectionEvent/AgentEvent rows).
   let finalOutcome: ToolLoopOutcome;
@@ -659,7 +651,7 @@ export async function filterVerdict(userId: string, content: string, kind: Filte
   return { surface: parsed.surface, rationale: parsed.rationale, category: parsed.category, error: false };
 }
 
-// 5.4.1 per-kind retry policy. BullMQ has a single fixed attempt count per job,
+// Per-kind retry policy. BullMQ has a single fixed attempt count per job,
 // so express per-kind caps here instead. `null` = not a known provider error
 // (LLM/unknown) → keep BullMQ's default retries. `0` = non-retryable, surface
 // immediately with no retries.
@@ -725,11 +717,7 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller; planner
   } catch (e) {
     if (e instanceof ConnectionError) {
       getLogger().warn({ agentId, err: e }, "integration not usable; surfacing reconnect");
-    // ponytail: per-kind retry counts ("retry 3x / retry once then surface")
-    // aren't expressible in BullMQ's fixed per-job attempt count; the uniform 5x
-    // policy plus this ConnectionError fail-fast covers it. Split into per-kind
-    // policies only if a provider starts burning retries.
-    await prisma.integrationConnection.updateMany({
+      await prisma.integrationConnection.updateMany({
       where: { userId: agent.userId, provider: GMAIL_INTEGRATION },
       data: { status: "expired" },
     });
@@ -771,7 +759,7 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller; planner
     await safeFold(agentId);
     return;
   } else {
-    // ProviderError (5.4.1): apply the per-kind retry cap instead of BullMQ's
+    // ProviderError: apply the per-kind retry cap instead of BullMQ's
     // uniform attempt count. Retryable kinds rethrow (BullMQ backoff) up to their
     // cap, then exhaust to a quiet audit trail — no DLQ churn for a provider
     // that keeps failing. Non-retryable (validation_failed) surfaces immediately.
@@ -791,7 +779,7 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller; planner
   }
   }
 
-  // Fire-time validation (4.11.6): the cheap model that classified the trigger
+  // Fire-time validation: the cheap model that classified the trigger
   // can misfire, so the owning agent re-checks the fired trigger's criteria
   // against the freshly-fetched data before acting. A mismatch is logged as
   // AgentEvent{trigger_skipped} and the run ends quietly — never surfaced.
@@ -818,7 +806,7 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller; planner
     ...availableTasks.map((t) => toLlmTool(t)),
   ];
 
-  // Multi-turn tool loop (4.9) — shared with the one-shot path (executeOnce).
+  // Multi-turn tool loop — shared with the one-shot path (executeOnce).
   // A terminal tool call (wait/draft) ends the run; a registered Task result is
   // appended as a tool message and the model is re-called with the accumulated
   // history, capped by MAX_TOOL_DEPTH inside runToolLoop. Hoisted so the
@@ -844,13 +832,12 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller; planner
     );
   };
 
-  // Phase 8 (8.2): a `complex` agent plans first. If the planner returns a real
-  // multi-step plan (>= 2 steps), execute dependency-resolved steps
-  // sequentially; a step whose tool loop THROWS triggers a replan (up to
-  // PLAN_REPLAN_CAP total attempts), and an exhausted cap surfaces the partial
-  // progress + an explicit failure. If planning fails open (null / 1 step) the
-  // agent falls through to the Phase 7 reflector, unchanged. wait/draft
-  // short-circuit in both paths (never evaluated).
+  // A complex agent plans first. If the planner returns a real multi-step plan
+  // (>= 2 steps), execute dependency-resolved steps sequentially; a step whose
+  // tool loop THROWS triggers a replan (up to PLAN_REPLAN_CAP total attempts),
+  // and an exhausted cap surfaces the partial progress + an explicit failure.
+  // If planning fails open (null / 1 step) the agent falls through to the
+  // reflector, unchanged. wait/draft short-circuit in both paths.
   const runStep: (step: PlanStep, priorResults: Array<{ id: string; content: string }>) => Promise<GeneratorOutcome> = async (step, priorResults) => {
     // Prior step results are integration/tool output — potentially attacker
     // influenced. They ride the USER (data) channel as delimited spans, never
@@ -941,7 +928,7 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller; planner
     return;
   }
   if (!finalOutcome) throw new Error("agent run produced no outcome");
-  // 7.3.3 audit rows persisted AFTER the loop completes — and BEFORE the
+  // Audit rows persisted AFTER the loop completes — and BEFORE the
   // terminal short-circuit, so a run that stopped (wait/draft) on a later
   // attempt still records its earlier failed attempts. A run that crashes
   // mid-loop persists nothing, so a BullMQ retry re-runs clean and can't
@@ -977,11 +964,11 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller; planner
 
   // The discard path is never skipped — write surfaced OR discarded.
   // Direct user requests always surface; background/triggered runs pass the
-  // async filter (4.7).
+  // async filter.
   const verdict = userTriggered(trigger)
     ? { surface: true, rationale: "user-triggered", category: "actionable" as const }
     : await filterVerdict(agent.userId, result.content);
-  // Cross-path dedup (6.x): webhook push AND adaptive poll can both wake the same
+  // Cross-path dedup: webhook push AND adaptive poll can both wake the same
   // agent to re-fetch the same mailbox and both decide to surface the SAME
   // output. A duplicate is downgraded to `discarded` so the user isn't shown the
   // same message twice. Only the background paths dedup: a direct user request
@@ -1022,15 +1009,14 @@ export async function executeAgent(job: Job, opts: { caller?: LlmCaller; planner
   // Append to the owner conversation AFTER the AgentEvent write. The raw result
   // goes to the AgentEvent (audit trail); the user sees a framed version written
   // by the interaction-agent persona so internal agents/integrations/tools never
-  // leak into chat (4.x execution -> Mimir -> user hop). Best-effort: if framing
-  // fails, the raw result surfaces rather than dropping the message.
+  // leak into chat. Best-effort: if framing fails, the raw result surfaces
+  // rather than dropping the message.
   const framed = await frameResultForUser({
     result: result.content,
     userMessage: context ?? "",
     ...(opts.caller ? { caller: opts.caller } : {}),
   });
-  // 7.3.2 low-confidence signal: a short appended note in the user-visible text
-  // (no Message column — payload flag + text note; UI affordance deferred).
+  // Low-confidence signal: a short appended note in the user-visible text.
   const surfacedContent = lowConfidence
     ? `${framed}\n\n(Note: I couldn't fully verify this result — please double-check the details.)`
     : framed;

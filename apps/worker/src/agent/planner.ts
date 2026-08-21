@@ -15,9 +15,9 @@ import type { ChatResult, LlmMessage } from "@mimir/shared-types";
 import type { GeneratorOutcome } from "./reflector.js";
 import type { LlmCaller } from "./agent-execution.js";
 
-// Phase 8 planning (8.2-8.3) — plan-first execution for complex agents. The
-// planner LLM call is cheap (classification tier) and fail-open: unparseable or
-// single-step output falls back to the caller's reflector path, never throws.
+// Plan-first execution for complex agents. The planner LLM build is cheap
+// (classification tier) and fail-open: unparseable or single-step output
+// falls back to the caller's reflector path, never throws.
 
 export interface PlanStep {
   id: string;
@@ -105,16 +105,16 @@ export function stripInjectedMarkers(steps: PlanStep[], taskText: string): PlanS
   });
 }
 
-// Phase 9 (9.1.1): parallelism comes from the dependsOn DAG, not a planner flag.
-// parsePlan guarantees deps reference EARLIER ids (array order is topological),
-// so a single left-to-right pass assigns each step a depth = 1 + max(dep depth).
+// Parallelism comes from the dependsOn DAG, not a planner flag. parsePlan
+// guarantees deps reference EARLIER ids (array order is topological), so a
+// single left-to-right pass assigns each step a depth = 1 + max(dep depth).
 // Same-depth steps are mutually independent (a dependency always forces a
 // strictly greater depth), so they can run concurrently; preserving array order
 // keeps evaluation deterministic.
 //
-// Defense-in-depth (paranoia 3): a malformed plan that slips past parsePlan (a
-// future planner change, a hand-crafted replan) would otherwise silently treat
-// an unresolved/forward/missing/cyclic dep as depth 0 and yield WRONG groups.
+// Defense-in-depth: a malformed plan that slips past parsePlan (a future
+// planner change, a hand-crafted replan) would otherwise silently treat an
+// unresolved/forward/missing/cyclic dep as depth 0 and yield WRONG groups.
 // Throw a clear error instead — executePlanSteps catches it and fails the plan
 // explicitly rather than scheduling steps in parallel with their dependencies.
 export function computeParallelGroups(steps: PlanStep[]): PlanStep[][] {
@@ -174,7 +174,7 @@ function concatAggregate(
   };
 }
 
-// The aggregation call (9.3.2): collapse a terminal parallel batch's worker
+// The aggregation call: collapse a terminal parallel batch's worker
 // outputs into ONE coherent user reply. Reuses the `surface` model tier (full
 // context) — worker outputs are real content to synthesize, not a cheap
 // classification. Any call failure or missing injector falls back to
@@ -198,8 +198,8 @@ export async function aggregateBatch(
   ];
   try {
     const result = await caller(messages, { useCase: "surface" });
-    // 9.4.3: aggregate cost rides the same per-user daily roll as the workers and
-    // the orchestrator — no separate attribution until a per-agent budget exists.
+    // Aggregate cost rides the same per-user daily roll as the workers and
+    // the orchestrator.
     await trackModelCall({ useCase: "aggregation", result, userId });
     try {
       await rollDailyUsage(userId, result.usage.totalTokens);
@@ -214,9 +214,9 @@ export async function aggregateBatch(
   }
 }
 
-// The planner LLM call (8.2). Fail-open: a call error or unparseable output is
-// null so the caller falls through to the reflector. `failureContext` is present
-// on replans (8.3.2) and tells the planner what failed and what already ran.
+// The planner LLM call. Fail-open: a call error or unparseable output is null
+// so the caller falls through to the reflector. `failureContext` is present on
+// replans and tells the planner what failed and what already ran.
 export async function planTask(
   userId: string,
   taskDescription: string,
@@ -255,15 +255,15 @@ export interface ExecutePlanOptions {
   steps: PlanStep[];
   userId: string;
   taskDescription: string;
-  /** AgentEvent{plan_step} readback rows (8.4.1); absent => no event writes (pure unit tests). */
+  /** Plan_step readback rows; absent => no event writes (pure unit tests). */
   agentId?: string;
   /** Plan row whose status stays in sync; absent => no status writes. */
   planId?: string;
   /** Runs one step's tool loop with prior step results available. */
   generateStep: (step: PlanStep, priorResults: Array<{ id: string; content: string }>) => Promise<GeneratorOutcome>;
-  /** Re-plans the whole task with failure context (8.3.2). Returns null when it can't produce a real plan. */
+  /** Re-plans the whole task with failure context. Returns null when it can't produce a real plan. */
   replan: (failureContext: string) => Promise<PlanStep[] | null>;
-  /** Collapses a terminal parallel batch's outputs into one coherent reply (9.3.2). When absent, outputs are concatenated (fail-open). */
+  /** Collapses a terminal parallel batch's outputs into one coherent reply. When absent, outputs are concatenated (fail-open). */
   aggregate?: Aggregator;
   /** Per-step wall-clock ceiling (hanging-worker guard). Absent => PLAN_STEP_TIMEOUT_MS. Exposed for tests. */
   stepTimeoutMs?: number;
@@ -304,12 +304,11 @@ async function recordStepOutcome(agentId: string | undefined, step: PlanStep, st
   }
 }
 
-// Phase 9 (9.2): run one parallel group's steps concurrently with
-// Promise.allSettled — NOT Promise.all — so a single worker rejecting never
-// abandons the other workers in the group (a bad URL in one lookup must not
-// kill the other lookups). Slices by MAX_PARALLEL_WORKERS (9.4.1), and each
-// slice is awaited and concatenated, so a rejection in an early slice never
-// stops later slices from running.
+// Run one parallel group's steps concurrently with Promise.allSettled — NOT
+// Promise.all — so a single worker rejecting never abandons the other workers
+// in the group (a bad URL in one lookup must not kill the other lookups).
+// Slices by MAX_PARALLEL_WORKERS, and each slice is awaited and concatenated,
+// so a rejection in an early slice never stops later slices from running.
 async function runGroupConcurrently(
   group: PlanStep[],
   completed: Array<{ id: string; result: ChatResult }>,
@@ -350,17 +349,17 @@ function appendMissingNote(result: ChatResult, missing: string[]): ChatResult {
   };
 }
 
-// Dependency-resolved execution (8.3 + Phase 9). Steps are grouped by the
-// dependsOn DAG into parallel groups (computeParallelGroups); groups run in
-// dependency order, and the members of each group run concurrently. A member
-// that THROWS is a step failure (9.3.3): if every member of a group fails the
-// plan re-plans with failure context (whole-group failure, up to PLAN_REPLAN_CAP
-// total attempts); if SOME members fail and others succeed the plan proceeds
-// with the successes and the missing subtask is flagged in the final aggregate
-// rather than failing the group. A terminal parallel batch with >1 success (or
-// any missing member) is collapsed into one coherent reply by the aggregator.
-// Wait/draft terminal outcomes short-circuit. Never dies silently: caps exhaust
-// to an explicit failure with whatever partial progress was produced.
+// Dependency-resolved execution. Steps are grouped by the dependsOn DAG into
+// parallel groups (computeParallelGroups); groups run in dependency order, and
+// the members of each group run concurrently. A member that THROWS is a step
+// failure: if every member of a group fails the plan re-plans with failure
+// context (whole-group failure, up to PLAN_REPLAN_CAP total attempts); if SOME
+// members fail and others succeed the plan proceeds with the successes and the
+// missing subtask is flagged in the final aggregate rather than failing the
+// group. A terminal parallel batch with >1 success (or any missing member) is
+// collapsed into one coherent reply by the aggregator. Wait/draft terminal
+// outcomes short-circuit. Never dies silently: caps exhaust to an explicit
+// failure with whatever partial progress was produced.
 export async function executePlanSteps(opts: ExecutePlanOptions): Promise<ExecutePlanResult> {
   const { generateStep, replan } = opts;
   const aggregate = opts.aggregate ?? ((_u: string, _t: string, outputs: Array<{ stepId: string; content: string }>, missing: string[]) => Promise.resolve(concatAggregate(outputs, missing)));
@@ -450,7 +449,7 @@ export async function executePlanSteps(opts: ExecutePlanOptions): Promise<Execut
       await updatePlanStatus(opts.planId, "completed");
       // Terminal parallel batch needs synthesizing into ONE reply when there are
       // multiple outputs to reconcile, or when a member is missing and must be
-      // flagged (9.3.3). A sequential single fold-up step needs none.
+      // flagged. A sequential single fold-up step needs none.
       if (terminalParallel && (terminalOutputs.length > 1 || missing.length > 0)) {
         return { outcome: "completed", result: await aggregate(opts.userId, opts.taskDescription, terminalOutputs, missing) };
       }

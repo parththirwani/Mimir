@@ -8,8 +8,6 @@ import { runTriggerSweep, TRIGGER_TICK_CRON } from "../agent/triggers.js";
 import { runWatchRenewal } from "../integrations/gmail/watch-renewal.js";
 import { runConnectionCanary } from "../integrations/connection-canary.js";
 
-// ponytail: queue name constants live in worker until a producer needs them
-// elsewhere; move to @mimir/backend-core then.
 export const AGENT_JOBS = "agent-jobs";
 export const AGENT_ONCE = "agent-once";
 export const AGENT_TRIGGERS = "agent-triggers";
@@ -62,7 +60,7 @@ export async function scheduleMailPollSweep(): Promise<void> {
   );
 }
 
-// 1-min trigger tick (4.11): reuses the agent-triggers queue like the other
+// 1-min trigger tick: reuses the agent-triggers queue like the other
 // cheap, low-frequency sweeps — no dedicated queue.
 export async function scheduleTriggerTick(): Promise<void> {
   await agentTriggers.upsertJobScheduler(
@@ -72,7 +70,7 @@ export async function scheduleTriggerTick(): Promise<void> {
   );
 }
 
-// Daily gmail watch renewal sweep (6.2.2) — re-registers watches nearing expiry.
+// Daily gmail watch renewal sweep — re-registers watches nearing expiry.
 export async function scheduleWatchRenewal(): Promise<void> {
   await agentTriggers.upsertJobScheduler(
     "watch-renewal",
@@ -94,12 +92,6 @@ export async function scheduleConnectionCanary(): Promise<void> {
 // agent-triggers processor: dormancy + mail-poll sweeps are the only real jobs.
 // Exported so tests can exercise it on a throwaway queue (the real
 // agent-triggers queue may be consumed by a live dev worker during tests).
-//
-// ponytail: reactivation is message-or-trigger only. There is deliberately NO
-// generic "poll every active agent" path here — polling is connection-scoped
-// (mail-poll.ts, which never enqueues an Agent row) and a fan-out over
-// Agent.entity re-surfaces finished tasks forever. A watch that needs
-// clock-driven checks is a per-connection monitor, not an agent fan-out.
 export async function agentTriggerProcessor(job: Job): Promise<void> {
   switch (job.name) {
     case "dormancy-sweep":
@@ -149,8 +141,8 @@ export function startWorkers(): Worker[] {
 
   const workers: Worker[] = [];
   for (const [queue, processor, workerOpts] of registrations) {
-    // 1.2.1 — thread jobId through every log line in the job's lifecycle (the
-    // api does the same for requestId). ALS carries it down the async chain.
+    // Thread jobId through every log line in the job's lifecycle (the api does the
+    // same for requestId). ALS carries it down the async chain.
     const withContext: (job: Job) => Promise<unknown> = (job) =>
       new Promise((resolve, reject) => {
         runWithContext({ jobId: String(job.id), queue: queue.name }, () => {

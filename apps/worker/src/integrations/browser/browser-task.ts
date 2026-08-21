@@ -6,14 +6,14 @@ import puppeteer from "puppeteer-core";
 import type { Browser } from "puppeteer-core";
 import { browserBudgetCheck, recordBrowserMinutes } from "../../infra/budget.js";
 
-// Browser-use task (5.6): a hosted headless-browser session wrapped as a Task,
+// Browser-use task: a hosted headless-browser session wrapped as a Task,
 // ephemeral per run, domain-allowlisted, cost routed through the budget guard.
 //
 // HOSTED (not self-hosted Chromium) is deliberate: the worker process also runs
 // agent/trigger/mail jobs, and rendering arbitrary third-party pages in-process
-// is exactly the isolation boundary the plan worries about. A hosted session
-// provider isolates page content (untrusted input) from the job processes for
-// free. Cost is the tradeoff, routed through the Redis budget stub.
+// is exactly the isolation boundary that matters. A hosted session provider
+// isolates page content (untrusted input) from the job processes for free.
+// Cost is the tradeoff, routed through the Redis budget stub.
 
 export interface HostedBrowserSession {
   title(): Promise<string>;
@@ -28,8 +28,7 @@ export interface BrowserRuntime {
 // Domain allowlist + denylist gate. Empty allowlist = allow all (dev default);
 // otherwise a strict hostname match. A denylist match always blocks (stronger
 // than a missing allowlist entry). Consequential browser actions are gated
-// separately by the agent's draft tool (4.10) — this boundaries WHAT can be
-// visited.
+// separately by the agent's draft tool — this boundaries WHAT can be visited.
 export function assertAllowedUrl(raw: string, allowlist?: string[], denylist?: string[]): URL {
   let u: URL;
   try {

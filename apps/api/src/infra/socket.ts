@@ -6,10 +6,6 @@ import { parseCookies, verifyAccessToken } from "../auth/tokens.js";
 import { deliverToUser } from "./delivery.js";
 
 const cfg = getConfig();
-
-// ponytail: single-instance in-memory socket registry. Multi-instance would need
-// Redis (SADD user-sockets:{userId} + TTL heartbeat) and the socket.io Redis
-// adapter; don't harden this map for multi-instance.
 const socketsByUser = new Map<string, Set<string>>();
 
 let io: Server | null = null;
@@ -18,7 +14,6 @@ let io: Server | null = null;
 // handshake with the access_token cookie and tracking the user's live sockets so
 // pub/sub can push to them.
 export function initSocket(server: HttpServer): void {
-  // tauri://localhost — packaged desktop app origin (Phase 12).
   const origins = [cfg.WEB_APP_URL, "http://localhost:3000", "tauri://localhost"].filter(
     (o): o is string => Boolean(o),
   );
@@ -41,15 +36,13 @@ export function initSocket(server: HttpServer): void {
     if (!ids) socketsByUser.set(userId, (ids = new Set()));
     ids.add(socket.id);
     getLogger().info({ userId, socketId: socket.id, open: ids.size }, "socket connected");
-    // 2.2.2 — manual ping/pong test event (distinct from socket.io's wire-level ping).
+    // Manual ping/pong test event (distinct from socket.io's wire-level ping).
     socket.on("ping", (cb) => {
       if (typeof cb === "function") cb({ event: "pong", at: new Date().toISOString() });
       else socket.emit("pong", { at: new Date().toISOString() });
     });
     socket.on("disconnect", () => {
       ids.delete(socket.id);
-      // Guard against a stale closure deleting a newer live set (edge: socket A
-      // disconnects after A reconnected as B — the map now holds B's set).
       if (ids.size === 0 && socketsByUser.get(userId) === ids) socketsByUser.delete(userId);
       getLogger().info({ userId, socketId: socket.id, open: ids.size }, "socket disconnected");
     });
@@ -85,8 +78,7 @@ export function initPubSub(subscriber: Redis): void {
     // Payloads carry their own event name ({event:'new_message',...}); emit on
     // that name so the web client can wire per-event handlers. Falls back to "debug".
     const eventName = typeof parsed.event === "string" ? parsed.event : "debug";
-    // 7.4 — single delivery decision point: live socket → web push. No email:
-    // email is a watched source, not a delivery channel.
+    // Live socket → web push. No email: email is a watched source, not a delivery channel.
     void deliverToUser(userId, eventName, (parsed.payload ?? {}) as { [k: string]: unknown })
       .then((delivery) => getLogger().info({ userId, eventName, channel: delivery }, "user event delivered"))
       .catch((e) => getLogger().error({ err: e, userId }, "delivery decision failed"));

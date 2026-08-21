@@ -2,8 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { jwtVerify, SignJWT } from "jose";
 import { ACCESS_TOKEN_TTL_SECONDS } from "@mimir/backend-core/constants";
 
-// ponytail: nothing hand-rolled here — jose (jwtVerify) rejects alg confusion
-// and unknown algos by default. Keep HS256 unless a future phase needs RS256.
+// jose (jwtVerify) rejects alg confusion and unknown algos by default. Keep HS256.
 export function signAccessToken(userId: string, secret: string): Promise<string> {
   return new SignJWT({})
     .setProtectedHeader({ alg: "HS256" })

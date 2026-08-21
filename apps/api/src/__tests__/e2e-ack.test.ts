@@ -218,36 +218,42 @@ ackDescribe("universal acknowledgment end-to-end (real LLM, mocked gmail/nango)"
     });
   });
 
-  afterAll(async () => {
-    await Promise.all(workers.map((w) => w.close()));
-    await deliverySub?.quit();
-    server.close();
-    (globalThis.fetch as unknown) = originalFetch;
-    for (const id of relayedJobIds) {
-      const [ej, aj] = await Promise.all([emailJobs.getJob(id), agentJobs.getJob(id)]);
-      await ej?.remove();
-      await aj?.remove();
-    }
-    await prisma.agentEvent.deleteMany({ where: { agentId: { in: agentIds } } });
-    await prisma.trigger.deleteMany({ where: { agentId: { in: agentIds } } });
-    await prisma.agent.deleteMany({ where: { id: { in: agentIds } } });
-    await prisma.outboxEvent.deleteMany({
-      where: {
-        OR: [
-          { payload: { path: ["agentId"], equals: agentIds } },
-          { payload: { path: ["userId"], equals: users } },
-        ],
-      },
-    });
-    await prisma.integrationConnection.deleteMany({ where: { userId: { in: users } } });
-    await prisma.message.deleteMany({ where: { conversationId: { in: conversations } } });
-    await prisma.conversation.deleteMany({ where: { id: { in: conversations } } });
-    await prisma.refreshToken.deleteMany({ where: { userId: { in: users } } });
-    await prisma.usageRecord.deleteMany({ where: { userId: { in: users } } });
-    await prisma.modelCallLog.deleteMany({ where: { userId: { in: users } } });
-    await prisma.analyticsEvent.deleteMany({ where: { userId: { in: users } } });
-    await prisma.user.deleteMany({ where: { id: { in: users } } });
-  });
+  afterAll(
+    async () => {
+      // close(force=true): don't wait on an in-flight shared-queue job, which
+      // blocks this hook past its budget under full-suite load. Uses generous
+      // hook timeout for the same teardown-over-live-Redis reason as queues.test.ts.
+      await Promise.all(workers.map((w) => w.close(true)));
+      await deliverySub?.quit();
+      server.close();
+      (globalThis.fetch as unknown) = originalFetch;
+      for (const id of relayedJobIds) {
+        const [ej, aj] = await Promise.all([emailJobs.getJob(id), agentJobs.getJob(id)]);
+        await ej?.remove();
+        await aj?.remove();
+      }
+      await prisma.agentEvent.deleteMany({ where: { agentId: { in: agentIds } } });
+      await prisma.trigger.deleteMany({ where: { agentId: { in: agentIds } } });
+      await prisma.agent.deleteMany({ where: { id: { in: agentIds } } });
+      await prisma.outboxEvent.deleteMany({
+        where: {
+          OR: [
+            { payload: { path: ["agentId"], equals: agentIds } },
+            { payload: { path: ["userId"], equals: users } },
+          ],
+        },
+      });
+      await prisma.integrationConnection.deleteMany({ where: { userId: { in: users } } });
+      await prisma.message.deleteMany({ where: { conversationId: { in: conversations } } });
+      await prisma.conversation.deleteMany({ where: { id: { in: conversations } } });
+      await prisma.refreshToken.deleteMany({ where: { userId: { in: users } } });
+      await prisma.usageRecord.deleteMany({ where: { userId: { in: users } } });
+      await prisma.modelCallLog.deleteMany({ where: { userId: { in: users } } });
+      await prisma.analyticsEvent.deleteMany({ where: { userId: { in: users } } });
+      await prisma.user.deleteMany({ where: { id: { in: users } } });
+    },
+    30_000,
+  );
 
   test("ack lines are LLM-varied and non-empty", async () => {
     const { generateAck } = await import("@mimir/backend-core");

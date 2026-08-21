@@ -98,7 +98,7 @@ model ConversationSummary {
   @@index([conversationId])
 }
 
-// Phase 10 fact layer — flat, atomically-retrievable durable facts extracted from
+// Flat, atomically-retrievable durable facts extracted from
 // the thread, alongside the narrative ConversationSummary (see fact-extraction.ts).
 // `status` is a plain string (not a PG enum) because it keeps gaining states —
 // active | superseded | deleted — and each addition would otherwise require an
@@ -120,10 +120,9 @@ model ExtractedFact {
   status         String   @default("active") // active | superseded | deleted
   sourceMessageId String?
   supersedesId   String?
-  // ponytail: SetNull assumes no hard-purge path exists — supersede chains stay
-  // soft-deleted (status flip), rows are never physically removed, so the FK
-  // always resolves to an existing (deleted) row. If a GDPR/cleanup hard-delete
-  // path is ever added, revisit this: SetNull would silently snap supersede links.
+// SetNull assumes no hard-purge path exists — supersede chains stay
+  // soft-deleted (status flip). Rows are never physically removed, so the FK
+  // always resolves to an existing (deleted) row.
   supersedes     ExtractedFact?  @relation("FactSupersedes", fields: [supersedesId], references: [id], onDelete: SetNull)
   supersededBy   ExtractedFact[] @relation("FactSupersedes")
   deletedAt      DateTime?
@@ -153,8 +152,8 @@ model Agent {
   taskDescription     String      @db.Text
   entity              String?
   status              AgentStatus @default(active)
-  // Phase 7 complexity gate (7.1): decided once at spawn by the 4.2
-  // classification call. Only `complex` agents route through the reflector.
+  // Complexity gate: decided once at spawn by the classification call. Only
+  // `complex` agents route through the reflector.
   complexity          AgentComplexity @default(simple)
   embedding           Unsupported("vector(1536)")? // needs CREATE EXTENSION vector (hand-added to init migration); client access via $queryRaw only
   contextSummary      String?     @db.Text // folded-in summary of older AgentEvents once the per-agent context budget (40 events / 8k tokens) is exceeded
@@ -168,10 +167,10 @@ model Agent {
   @@index([userId, status])
 }
 
-// Phase 8 planning (8.2): one row per planned complex run. `steps` is the
-// planner's ordered, dependency-resolved JSON. status tracks the run so a replan
-// can mark the failed plan before retrying. agentId stays required — one-shot
-// runs skip planning entirely (they have no Agent to own the plan).
+// Planning: one row per planned complex run. `steps` is the planner's ordered,
+// dependency-resolved JSON. status tracks the run so a replan can mark the
+// failed plan before retrying. agentId stays required — one-shot runs skip
+// planning entirely (they have no Agent to own the plan).
 model Plan {
   id        String   @id @default(uuid())
   agentId   String
@@ -194,7 +193,7 @@ model AgentEvent {
   @@index([agentId, createdAt])
 }
 
-// Phase 7 reflector (7.3.3): one row per failed evaluation on a complex run.
+// Reflector: one row per failed evaluation on a complex run.
 // Kept separate from AgentEvent so reflection noise doesn't pollute the agent's
 // working context once a final answer is reached. `agentId` stays required —
 // one-shot runs (no Agent) skip the DB write, not the column.
@@ -210,9 +209,9 @@ model ReflectionEvent {
   @@index([agentId, createdAt])
 }
 
-// First-class triggers (4.11): a natural-language condition scoped to its owning
+// First-class triggers: a natural-language condition scoped to its owning
 // agent, evaluated by the 1-min scheduler tick. Created via cheap-model
-// classification; re-checked at fire time (4.11.6) by the owning agent before it
+// classification; re-checked at fire time by the owning agent before it
 // acts. `criteria` is the natural-language condition, not a cron expression —
 // `schedule` is reserved for future user-supplied cadences.
 model Trigger {
@@ -253,7 +252,7 @@ model SurfacedMail {
   @@index([userId])
 }
 
-// User-supplied MCP servers (5.8): separate settings section, streamable-HTTP
+// User-supplied MCP servers: separate settings section, streamable-HTTP
 // transport ONLY. stdio is intentionally off the table for user-added servers —
 // it spawns an arbitrary binary on our infrastructure (arbitrary code exec).
 // The tool schema is fetched + cached at registration; runtime failures map to

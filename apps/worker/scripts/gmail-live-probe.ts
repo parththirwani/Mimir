@@ -19,13 +19,13 @@ const list = (await transport("/gmail/v1/users/me/messages", { query: { maxResul
 const id = list.messages?.[0]?.id;
 console.log("\n[Bug 2] probe message id =", id);
 
-// Path that shipped before the fix: repeated metadataHeaders.
+// format=metadata + repeated metadataHeaders.
 const withMeta = (await transport(`/gmail/v1/users/me/messages/${id}`, {
   query: { format: "metadata", metadataHeaders: ["From", "Subject", "List-Unsubscribe", "In-Reply-To"] },
 })).data as { payload?: { headers?: { name: string; value: string }[] } };
 console.log("[Bug 2] format=metadata + repeated metadataHeaders ->", (withMeta.payload?.headers ?? []).map((h) => h.name).join(", ") || "(no headers returned)");
 
-// The fix: format=metadata alone, Gmail returns all headers.
+// format=metadata alone, Gmail returns all headers.
 const bare = (await transport(`/gmail/v1/users/me/messages/${id}`, {
   query: { format: "metadata" },
 })).data as { payload?: { headers?: { name: string; value: string }[] } };

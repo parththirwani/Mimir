@@ -35,13 +35,7 @@ export function chatSystemPrompt(): string {
       loadPrompt("integrations.md"),
       loadPrompt("email.md"),
       loadPrompt("meomery.md"),
-      // ponytail: the persona files were written for an interaction agent that
-      // HAS real agent/tool-calling. This deployment does not expose those tools
-      // in the chat turn, so without this guard the model improvises fake tool
-      // calls (e.g. `<send_message_to_agent name="search_agent">`) as visible
-      // text, leaking the internal design to the user. Keep this authoritative
-      // no-tools declaration LAST so it isn't overridden. Revisit when real tools
-      // are actually wired into chat_response.
+      // Keep this authoritative no-tools declaration LAST so it isn't overridden.
       loadPrompt("chat_no_tools.md"),
     ].join("\n\n---\n\n");
   }
@@ -86,9 +80,8 @@ export function oneShotSystemPrompt(): string {
 
 // Format the raw execution result into a user-facing message (the missing
 // "execution -> Mimir -> user" hop). The raw result is never shown verbatim; the
-// interaction-agent persona composes the reply so internal agents/integrations/
-// tools stay hidden. Best-effort: a failure returns the original result so a
-// useful surfaced message is never dropped, but it IS logged.
+// interaction-agent persona composes the reply so internal agents/integrations/tools
+// stay hidden.
 export interface FrameResultOptions {
   result: string;
   userMessage: string;
@@ -114,8 +107,8 @@ export async function frameResultForUser(opts: FrameResultOptions): Promise<stri
     const framed = res.content.trim();
     return framed || opts.result;
   } catch (e) {
-    // Framing is best-effort — never drop a surfaced result because it couldn't
-    // be reworded. Log and fall back to the raw content.
+    // Never drop a surfaced result because it couldn't be reworded. Log and
+    // fall back to the raw content.
     getLogger().warn({ err: e }, "surface framing failed; surfacing raw result");
     return opts.result;
   }

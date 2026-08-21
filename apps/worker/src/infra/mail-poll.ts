@@ -52,10 +52,8 @@ function renderMail(m: GmailMessage, opts?: { forUser?: boolean; timezone?: stri
   return `From: ${m.from}\nSubject: ${m.subject}\nReceived: ${received}${head}\n\n${m.body}`;
 }
 
-// User's IANA tz comes from their browser (POST /user/timezone). Unknown or
+// The user's IANA tz comes from their browser (POST /user/timezone). Unknown or
 // garbage tz falls back to the raw ISO string.
-// ponytail: only users who loaded the web chat have a tz set; anyone else (or a
-// bad value) keeps UTC. Upgrade: fall back to a server tz env var if users appear.
 function localizeReceived(iso: string, timezone?: string | null): string {
   if (!iso || !timezone) return iso;
   try {
@@ -89,7 +87,7 @@ async function ownerConversation(userId: string): Promise<string> {
 export interface MailPollDeps {
   cache?: Redis;
   fetch?: typeof fetchEntityData;
-  // The triage judge (6.5.5). Tests inject a deterministic one; the production
+  // The triage judge. Tests inject a deterministic one; the production
   // default is triageVerdict. Compatibility: tests may pass an extra `kind` arg,
   // so type it loosely enough to accept either.
   filter?: (userId: string, content: string, kind?: string) => Promise<TriageVerdict>;
@@ -105,9 +103,9 @@ export interface MailPollDeps {
 export async function pollImportantMail(deps: MailPollDeps = {}): Promise<number> {
   const cache = deps.cache ?? redis;
   const fetchData = deps.fetch ?? fetchEntityData;
-  // 6.5.5 — triage classifier (stricter, default-to-false) is the judge for this
-  // unwatched-inbox surfacing, distinct from 4.7's filter (which gates watched
-  // agents). Injectable so tests can hand in a deterministic judge.
+  // Triage classifier (stricter, default-to-false) is the judge for this
+  // unwatched-inbox surfacing, distinct from the async filter (which gates
+  // watched agents). Injectable so tests can hand in a deterministic judge.
   const judge = deps.filter ?? triageVerdict;
   const publish = deps.publish ?? publishUserEvent;
   const noiseTtlSeconds = deps.noiseTtlSeconds ?? MAIL_NOISE_TTL_SECONDS;

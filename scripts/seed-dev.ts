@@ -1,4 +1,4 @@
-// Seed one local dev user so Phase 1 has something to log in as immediately (0.5.2).
+// Seed one local dev user so there's something to log in as immediately.
 // Idempotent: re-running upserts by email. Run: bun scripts/seed-dev.ts
 import { getPrismaClient } from "@mimir/backend-core";
 

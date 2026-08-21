@@ -96,31 +96,36 @@ describe("agent end-to-end (real LLM, mocked integration)", () => {
     });
   });
 
-  afterAll(async () => {
-    // Close only OUR workers. agentJobs is a module singleton shared with
-    // queues.test.ts (all test files run in one bun process) — never close it.
-    await Promise.all(workers.map((w) => w.close()));
-    await deliverySub?.quit();
-    server.close();
-    for (const id of relayedJobIds) {
-      const job = await agentJobs.getJob(id);
-      await job?.remove();
-    }
-    await prisma.agentEvent.deleteMany({ where: { agentId: { in: agentIds } } });
-    await prisma.trigger.deleteMany({ where: { agentId: { in: agentIds } } });
-    await prisma.agent.deleteMany({ where: { id: { in: agentIds } } });
-    await prisma.message.deleteMany({ where: { conversationId } });
-    await prisma.conversation.deleteMany({ where: { id: conversationId } });
-    for (const agentId of agentIds) {
-      await prisma.outboxEvent.deleteMany({ where: { payload: { path: ["agentId"], equals: agentId } } });
-    }
-    await prisma.refreshToken.deleteMany({ where: { userId } });
-    await prisma.usageRecord.deleteMany({ where: { userId } });
-    await prisma.modelCallLog.deleteMany({ where: { userId } });
-    await prisma.analyticsEvent.deleteMany({ where: { userId } });
-    await prisma.integrationConnection.deleteMany({ where: { userId } });
-    await prisma.user.delete({ where: { id: userId } });
-  });
+  afterAll(
+    async () => {
+      // Close only OUR workers. agentJobs is a module singleton shared with
+      // queues.test.ts (all test files run in one bun process) — never close it.
+      // close(force=true): don't wait on an in-flight shared-queue job, which
+      // blocks this hook past its budget under full-suite load.
+      await Promise.all(workers.map((w) => w.close(true)));
+      await deliverySub?.quit();
+      server.close();
+      for (const id of relayedJobIds) {
+        const job = await agentJobs.getJob(id);
+        await job?.remove();
+      }
+      await prisma.agentEvent.deleteMany({ where: { agentId: { in: agentIds } } });
+      await prisma.trigger.deleteMany({ where: { agentId: { in: agentIds } } });
+      await prisma.agent.deleteMany({ where: { id: { in: agentIds } } });
+      await prisma.message.deleteMany({ where: { conversationId } });
+      await prisma.conversation.deleteMany({ where: { id: conversationId } });
+      for (const agentId of agentIds) {
+        await prisma.outboxEvent.deleteMany({ where: { payload: { path: ["agentId"], equals: agentId } } });
+      }
+      await prisma.refreshToken.deleteMany({ where: { userId } });
+      await prisma.usageRecord.deleteMany({ where: { userId } });
+      await prisma.modelCallLog.deleteMany({ where: { userId } });
+      await prisma.analyticsEvent.deleteMany({ where: { userId } });
+      await prisma.integrationConnection.deleteMany({ where: { userId } });
+      await prisma.user.delete({ where: { id: userId } });
+    },
+    30_000,
+  );
 
   test(
     "classification -> spawn -> outbox -> execution -> delivery -> dedup",
@@ -148,7 +153,12 @@ describe("agent end-to-end (real LLM, mocked integration)", () => {
           }),
         (row) => !!row,
       );
-      expect(outbox!.processedAt).toBeNull();
+      // processedAt is deliberately NOT asserted here: any relay reader (a
+      // running dev worker shares this outbox table) may legally mark the row
+      // between our write and this poll — that's the outbox pattern working, not
+      // a defect. What the spawn tx must guarantee is the wired row itself.
+      expect(outbox!.eventType).toBe("spawn_agent");
+      expect((outbox!.payload as { agentId: string }).agentId).toBe(agent!.id);
 
       // Relay — replicate drainOutbox's per-row behavior scoped to OUR row. Running
       // drainOutbox() here would also drain outbox-relay.test.ts's rows (shared table,

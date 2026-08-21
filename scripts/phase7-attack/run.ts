@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { loadEnv } from "../intent-iteration/_env.js";
 import { callOpenRouter, getPrismaClient, getLogger, loadPrompt } from "@mimir/backend-core";
 
-// Phase 7 attack harness — 25 real-LLM prompts aimed at breaking the reflector:
+// Attack harness — 25 real-LLM prompts aimed at breaking the reflector:
 //   A) the classification complexity gate (8-18 classification prompts), and
 //   B) the reflection evaluator (7 task+result pairs).
 // Each prompt records whether the live model resisted or fell for the attack.

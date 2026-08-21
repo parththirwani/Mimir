@@ -34,7 +34,7 @@ const prisma = getPrismaClient();
 
 export const authRouter: Router = Router();
 
-// Desktop (Phase 12): the packaged Tauri webview is cross-site (tauri://localhost)
+// Desktop: the packaged Tauri webview is cross-site (tauri://localhost)
 // to the API, so SameSite=Lax cookies won't ride its fetches. Loosen to SameSite=None
 // ONLY when the request's Origin is genuinely the packaged webview — Origin is set by
 // the browser, not spoofable from JS (a custom header would be trivially forged).
@@ -44,8 +44,6 @@ export const authRouter: Router = Router();
 // ONLY against an https API — the rung-1 packaged verification must run against the
 // https deployment, never a local http one. Dev never hits this branch anyway (devUrl
 // localhost:3000 is same-site to localhost:4000, so Lax suffices there).
-// ponytail: SameSite=None weakens CSRF standing for the desktop cookie; it's the
-// cheapest fix that works, revisit if the webview cookie story changes.
 function isDesktopOrigin(req: Request): boolean {
   return req.headers.origin === "tauri://localhost";
 }

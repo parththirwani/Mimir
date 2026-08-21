@@ -52,15 +52,14 @@ const prisma = getPrismaClient();
 
 const messageRouter: Router = Router();
 
-// Reply context window (10.2.1): the payload is newest-first from the DB query
+// Reply context window: the payload is newest-first from the DB query
 // (orderBy createdAt desc, take 50). Keep the newest N and return them
-// oldest->newest — the shape the reply call consumes. Exactly matching a
-// full fetch in tests reproduces the oldest-50 bug if the query order flips.
+// oldest->newest — the shape the reply call consumes.
 export function lastNMessages<T>(messages: T[], n = 50): T[] {
   return messages.slice(0, n).reverse();
 }
 
-// 10.2.2 cost gate — only query durable facts once the reply window filled up
+// Only query durable facts once the reply window filled up
 // (history.length === windowSize means the DB take was capped, i.e. the thread
 // actually has >= windowSize messages). Below that the full history is already in
 // context and a fact-retrieval call (embed + pgvector query) buys nothing.
@@ -68,7 +67,7 @@ export function shouldFetchFacts(historyLength: number, windowSize = 50): boolea
   return historyLength >= windowSize;
 }
 
-// Render retrieved facts (10.2.2) as a system context block, or null when there's
+// Render retrieved facts as a system context block, or null when there's
 // nothing to inject (empty result / fail-open reads return []).
 export function factContextBlock(facts: { subject: string; fact: string }[]): string | null {
   if (facts.length === 0) return null;
@@ -273,8 +272,8 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
         });
         return;
       }
-      // The new draft exists — now remove the superseded one from Gmail
-      // (best-effort) so repeated edits don't pile up orphaned copies. A
+      // The new draft exists — now remove the superseded one from Gmail so
+      // repeated edits don't pile up orphaned copies. A
       // user-initiated cancel intentionally keeps its draft; only the draft
       // being edited away is removed here, and only once the replacement landed.
       await deleteEmailDraft(userId, pendingAction.draftId).catch((e) =>
@@ -324,7 +323,7 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     return;
   }
 
-  // A pending agent draft (4.10) forces resolution before any new work — the
+  // A pending agent draft forces resolution before any new work — the
   // execution agent's verbatim content sits in the thread awaiting confirm or
   // cancel. Confirm re-triggers the SAME agent with the draft as context; cancel
   // marks the draft dead and the agent is not re-run. An unrelated message
@@ -389,8 +388,7 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
   }
 
   // Context: prior assistant/user turns so the reply is a conversation, not a one-shot.
-  // 10.2.1 — window is the most RECENT 50 (desc + take 50), returned oldest->newest,
-  // not the oldest 50 the old asc+take bug produced.
+  // Window is the most RECENT 50 (desc + take 50), returned oldest->newest.
   const history = await prisma.message.findMany({
     where: { conversationId, role: { in: ["user", "assistant"] } },
     orderBy: { createdAt: "desc" },
@@ -736,9 +734,8 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       complexity: classification.complexity,
     });
     await trackEvent(userId, "agent_spawned", { conversationId, agentId });
-    // Cheap-model trigger extraction (4.11): an implicit "watch-for" condition
-    // gets its own Trigger row so the 1-min tick can fire the agent. A misfire
-    // here is harmless — no trigger just means the agent runs on user asks only.
+    // Cheap-model trigger extraction: an implicit "watch-for" condition
+    // gets its own Trigger row so the 1-min tick can fire the agent.
     const triggerProposal = await classifyTrigger(userId, content, classification.taskDescription);
     if (triggerProposal.hasTrigger && triggerProposal.criteria) {
       await prisma.trigger.create({
@@ -768,7 +765,7 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     // The Interaction Agent persona (system.md + rules.md + integrations.md +
     // email.md + meomery.md) leads the chat context — everything the model says
     // to the user is governed by it.
-    // 10.2.2 — once the thread reaches the window (history.length === 50 means
+    // Once the thread reaches the window (history.length === 50 means
     // the query was capped, i.e. >=50 messages), retrieve durable facts for the
     // current message and inject them as a system block after the persona.
     const factBlock = shouldFetchFacts(history.length)

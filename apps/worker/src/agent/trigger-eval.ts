@@ -56,7 +56,10 @@ export async function evaluateTrigger(opts: {
   return parseTriggerVerdict(result.content);
 }
 
-// Fire-time re-check (4.11.6): the cheap creation/trigger model is error-prone,
+// Fire-time re-check: the cheap creation/trigger model is error-prone, so the
+// owning agent re-validates the fired trigger's criteria against the SAME
+// freshly-fetched data before acting. A mismatch is logged into the event stream
+// but never surfaced to the user. `evaluate` injectable for tests.
 // so the owning agent re-validates the fired trigger's criteria against the SAME
 // freshly-fetched data before acting. A mismatch is logged into the event stream
 // but never surfaced to the user. `evaluate` injectable for tests.

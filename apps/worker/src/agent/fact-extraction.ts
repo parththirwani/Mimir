@@ -9,17 +9,14 @@ import {
 } from "@mimir/backend-core";
 import type { ChatResult, LlmMessage } from "@mimir/shared-types";
 
-// Phase 10 fact layer — flat, atomically-retrievable durable facts extracted
-// from the thread, alongside the narrative ConversationSummary. Extraction is a
-// fixed pipeline (NOT agent-managed memory): run on the same sweep tick as
-// summarization over the same delta message range, then stored for retrieval.
+// Flat, atomically-retrievable durable facts extracted from the thread,
+// alongside the narrative ConversationSummary. Extraction is a fixed pipeline
+// (NOT agent-managed memory): run on the same sweep tick as summarization over
+// the same delta message range, then stored for retrieval.
 //
 // The READ path (searchActiveFacts / FactHit) lives in packages/backend-core
 // (shared with the api's reply-context injection) and is re-exported here so
-// this module remains the single import surface for callers/tests.
-//
-// ponytail: compat re-export, delete when scripts/phase10-facts/run.ts and
-// __tests__/fact-extraction.test.ts import from @mimir/backend-core directly.
+// this module stays the single import surface for callers/tests.
 export { searchActiveFacts, type FactHit } from "@mimir/backend-core";
 
 const prisma = getPrismaClient();
@@ -307,13 +304,6 @@ export async function extractFacts(
 // fact (independent row) — only the chain pointer (old.supersedesId is null;
 // the newer.supersedesId points at the now-deleted old row, which stays valid
 // since the row still exists).
-//
-// ponytail: deleteFact has ZERO production call sites today, deliberately — no
-// confidence signal exists in the extraction pipeline and no "forget this"
-// UI/API exists yet. It ships ready-to-call so a real trigger (incorrect
-// extraction flag, a user-facing forget action) wires here without changing
-// semantics. Add call sites only when a real trigger exists; don't invent
-// speculative wiring or a confidence model to call it.
 export async function deleteFact(factId: string, reason: FactDeleteReason): Promise<void> {
   try {
     await prisma.extractedFact.updateMany({

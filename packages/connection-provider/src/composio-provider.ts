@@ -17,8 +17,6 @@ import { GMAIL_INTEGRATION } from "./nango-provider.js";
 // `connectedAccounts.get()`. So this provider never touches a raw token. Every
 // Gmail API call goes through `composio.tools.proxyExecute()`, which injects the
 // connected account's credentials server-side and returns `{ status, data }`.
-// That makes the token-masking "fix" moot and removes the raw-token path that
-// 401'd at Gmail.
 const COMPOSIO_DEFAULT_BASE_URL = "https://backend.composio.dev";
 
 export interface ComposioProviderOptions {
@@ -119,10 +117,6 @@ export class ComposioConnectionProvider implements ConnectionProvider {
     const { method = "GET", body } = opts;
     const parameters = queryToProxyParameters(opts.query);
     try {
-      // ponytail: the SDK's proxyExecute is typed with the client's snake_case
-      // wire form (ToolProxyParams) but validates a flat camelCase body at
-      // runtime (endpoint/method/body/parameters/connectedAccountId). The cast
-      // bridges the misaligned type; the runtime schema is authoritative.
       const res = (await this.composio().tools.proxyExecute({
         endpoint: path,
         method,
@@ -144,8 +138,8 @@ export class ComposioConnectionProvider implements ConnectionProvider {
     try {
       await this.composio().connectedAccounts.delete(row.connectionId as never);
     } catch {
-      // ponytail: best-effort — the local row is still removed so the UI flips to
-      // disconnected even if Composio's connected account is already gone.
+      // Local row is still removed so the UI flips to disconnected even if the
+      // upstream connected account is already gone.
     }
     await this.store.delete({ where: { id: row.id } });
   }

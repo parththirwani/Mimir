@@ -61,9 +61,6 @@ export async function fetchGmailMessages(transport: GmailTransport, opts: FetchG
   const messages: GmailMessage[] = [];
   for (const row of list.messages ?? []) {
     const detail = await gmailRpc<GmailDetailResponse>(transport, `/gmail/v1/users/me/messages/${row.id}`, {
-      // ponytail: format=metadata with no metadataHeaders makes Gmail return ALL
-      // headers. The repeated metadataHeaders param (a 4-key subset) was collapsing
-      // in Composio's proxy, blanking From/Subject. Single-param path only.
       query: { format: "metadata" },
     });
     const listUnsubscribe = headerValue(detail.payload, "List-Unsubscribe");
@@ -81,7 +78,7 @@ export async function fetchGmailMessages(transport: GmailTransport, opts: FetchG
   return messages;
 }
 
-// Composite Task (4.9.2): one aggregated "search my Gmail" result from a real
+// Composite Task: one aggregated "search my Gmail" result from a real
 // Gmail query — the Execution Agent translates its ask into Gmail search syntax
 // (from:/subject:/keyword) and this hits messages.list?q=... for real matches.
 export function gmailSearchTask(): Task {
@@ -100,9 +97,6 @@ export function gmailSearchTask(): Task {
       const provider = gmailProvider(cfg, prisma.integrationConnection, `${cfg.PUBLIC_API_URL ?? cfg.WEB_APP_URL ?? ""}/api/v1/integrations/gmail/callback`);
       const transport: GmailTransport = (path, opts) => provider.gmailRequest(ctx.userId, path, opts);
       try {
-        // ponytail: single Gmail q call, no time-window fan-out — Gmail searches the
-        // whole mailbox server-side. Fan out only if a single q can't express a
-        // multi-window intent.
         return { provider: "gmail", query, messages: await fetchGmailMessages(transport, { query, maxResults: 20 }) };
       } catch (e) {
         if (e instanceof ConnectionError) throw new ToolError("connection", e.message);
@@ -118,10 +112,10 @@ export interface GmailWatchResult {
   historyId: string;
 }
 
-// 6.2.1 — Gmail push watch registration. Requires a Pub/Sub topic (Google Cloud)
+// Gmail push watch registration. Requires a Pub/Sub topic (Google Cloud)
 // reachable by the Gmail account; the user's OAuth token authorizes the watch
 // against the shared topic. Gmail expiring the watch (~7 days) is handled by the
-// renewal sweep (6.2.2).
+// renewal sweep.
 export async function registerGmailWatch(transport: GmailTransport, topicName: string): Promise<GmailWatchResult> {
   const watch = await gmailRpc<{ expiration?: number; historyId?: string }>(transport, "/gmail/v1/users/me/watch", {
     method: "POST",

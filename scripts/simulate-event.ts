@@ -1,10 +1,10 @@
 import { loadEnv } from "./intent-iteration/_env.js";
 import { Redis } from "ioredis";
 
-// Phase 11 checkpoint driver: publish a fake `user-events:{userId}` message so
-// the api's delivery fallback (socket -> web push) can be verified without a
-// real agent/Gmail event. Exercise: close the app entirely, run this, and the
-// notification should arrive; with the app open it lands on the live socket.
+// Publish a fake `user-events:{userId}` message so the api's delivery fallback
+// (socket -> web push) can be verified without a real agent/Gmail event.
+// Exercise: close the app entirely, run this, and the notification should
+// arrive; with the app open it lands on the live socket.
 //
 // Usage: bun scripts/simulate-event.ts <userId> [content]
 // Needs REDIS_URL in .env (or exported).

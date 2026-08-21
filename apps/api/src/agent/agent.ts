@@ -27,10 +27,7 @@ export interface Classification {
   taskDescription?: string;
   targetHint?: string;
   confidence: number;
-  // Phase 7 complexity gate (7.1): decided once at spawn by this same call.
   // Only `complex` routes through the reflector. Defaults to "simple".
-  // ponytail: complexity is decided once at spawn; 7.1.2's "re-evaluatable" is
-  // deferred until a mechanism that changes scope mid-run exists.
   complexity: ClassificationComplexity;
 }
 
@@ -161,11 +158,10 @@ export function parseClassification(raw: string): Classification {
         ? rawAction
         : "answer_directly";
     const confidence = typeof json.confidence === "number" ? json.confidence : 0;
-    // Phase 7 (7.1): complexity decided at spawn. Only an explicit "complex" is
-    // honored; anything else (missing, malformed, "simple") defaults to simple.
+    // Only an explicit "complex" is honored; anything else (missing, malformed, "simple") defaults to simple.
     const complexity: ClassificationComplexity = json.complexity === "complex" ? "complex" : "simple";
     if (action === "answer_directly") return ANSWER_DIRECTLY;
-    // Spec 4.2.2 fallback: confidence < 0.5 forces answer_directly. Applied to
+    // Confidence < 0.5 forces answer_directly. Applied to
     // the state-creating action (spawn_agent), to the tool-delegating one_shot,
     // and to ask_clarification — a low-confidence guess must not fire a
     // delegation or the canned "be more specific" reply; it falls back to a
@@ -203,7 +199,6 @@ export async function findDuplicateAgent(userId: string, taskDescription: string
   try {
     embedding = await embedTask(taskDescription);
   } catch (e) {
-    // ponytail: dedup is best-effort; a failed embed degrades to no-match (spawn proceeds).
     getLogger().warn({ err: e }, "embedding failed; skipping dedup");
     return { duplicate: null, embedding: null };
   }
@@ -242,9 +237,7 @@ export async function spawnAgent(opts: {
         taskDescription: opts.taskDescription,
         complexity: opts.complexity,
         // The worker only fetches Gmail when the entity OR task mentions
-        // email/mail (gmail.ts's own guard); hardcoding "gmail" made every
-        // spawned agent — including web-search watches — hit Gmail and surface
-        // a bogus "Connect Gmail" prompt when unconnected. Derive it here.
+        // email/mail (gmail.ts's own guard); derive the entity from the task.
         entity: /email|mail/i.test(opts.taskDescription) ? "gmail" : "browser",
       },
     });
@@ -348,9 +341,9 @@ export async function listActiveWithTriggers(userId: string): Promise<{ id: stri
   return agents;
 }
 
-// Cheap-model extraction of an implicit "watch-for" trigger from a spawn request
-// (4.11). Runs alongside spawn; a detected trigger gets its own Trigger row so
-// the 1-min scheduler can fire the agent without a user in the loop.
+// Cheap-model extraction of an implicit "watch-for" trigger from a spawn request.
+// Runs alongside spawn; a detected trigger gets its own Trigger row so the
+// 1-min scheduler can fire the agent without a user in the loop.
 export interface TriggerProposal {
   hasTrigger: boolean;
   name?: string;
