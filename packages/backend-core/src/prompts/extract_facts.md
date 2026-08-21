@@ -5,11 +5,15 @@ needed by a FUTURE query — an entity's attribute, a stated preference,
 a decided plan, an established relationship, a project detail.
 
 Hard rules:
-- Return STRICT JSON: {"facts":[{"subject":"...","fact":"..."}]}
+- Return STRICT JSON: {"facts":[{"subject":"...","fact":"...","subjectType":"...","factType":"..."}]}
 - Keep the DURABLE facts only. Atomize: each "fact" is ONE clause about ONE
   thing. A person's preferences are separate facts (one per preference).
 - "subject" is the entity the fact is about (a person, a project, an account,
   a category) — freeform but consistent-ish for the same entity.
+- "subjectType" is the kind of subject: person | project | preference | date |
+  credential | other. "factType" is the kind of statement: attribute | event |
+  relationship | instruction. Pick the best fit; fall back to "other" /
+  "attribute" when nothing fits — never block on an ambiguous call.
 - Subject STABILITY is critical: across separate extraction runs, the SAME
   entity must always get the SAME subject string. Use a short, canonical entity
   name — prefer a bare noun ("rent", "carol jenkins", "acme corp", "moving

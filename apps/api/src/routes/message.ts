@@ -7,7 +7,7 @@ import {
   backfillCost,
   rollDailyUsage,
   chatSystemPrompt,
-  searchActiveFacts,
+  searchActiveFactsWithRelations,
 } from "@mimir/backend-core";
 import { messageSchema } from "@mimir/zod-schemas";
 import { ConnectionError } from "@mimir/connection-provider";
@@ -31,6 +31,7 @@ import {
   resolvePendingAction,
 } from "../email/email-action.js";
 import { writeAck } from "../agent/ack.js";
+import { createHash } from "node:crypto";
 import {
   classifyMessage,
   classifyTrigger,
@@ -49,6 +50,10 @@ import {
 } from "../agent/agent-draft.js";
 
 const prisma = getPrismaClient();
+
+// Short stable hash of a system prompt, for the 10.7 context snapshot.
+// sha256 hex is a collision-safe enough oracle to diff prompt versions.
+const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
 
 const messageRouter: Router = Router();
 
@@ -761,6 +766,9 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
   }
 
   let result;
+  let sendSystemPromptHash: string | undefined;
+  let sendInjectedBlocks: Array<{ type: string; refIds: string[] }> | undefined;
+  let sendMessageWindow: string[] | undefined;
   try {
     // The Interaction Agent persona (system.md + rules.md + integrations.md +
     // email.md + meomery.md) leads the chat context — everything the model says
@@ -768,12 +776,18 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     // Once the thread reaches the window (history.length === 50 means
     // the query was capped, i.e. >=50 messages), retrieve durable facts for the
     // current message and inject them as a system block after the persona.
-    const factBlock = shouldFetchFacts(history.length)
-      ? factContextBlock(await searchActiveFacts(conversationId, content))
-      : null;
+    const facts = shouldFetchFacts(history.length)
+      ? await searchActiveFactsWithRelations(conversationId, content)
+      : [];
+    const factBlock = factContextBlock(facts);
     const replyContext = factBlock
       ? [{ role: "system" as const, content: factBlock }, ...messages]
       : messages;
+    // 10.7 context snapshot: system prompt hash + what was injected (facts)
+    // and the message window that formed the reply context.
+    sendSystemPromptHash = `sha256:${sha256(chatSystemPrompt())}`;
+    sendInjectedBlocks = factBlock ? [{ type: "facts", refIds: facts.map((f) => f.id) }] : undefined;
+    sendMessageWindow = [...history].reverse().map((m) => m.id);
     result = await callOpenRouter([{ role: "system", content: chatSystemPrompt() }, ...replyContext], { useCase: "chat_response" });
   } catch (e) {
     getLogger().error({ err: e }, "openrouter call failed");
@@ -786,7 +800,14 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     res.status(mapped.status).json({ error: { code: mapped.code, message: mapped.message } });
     return;
   }
-  const logId = await trackModelCall({ userId, useCase: "chat_response", result });
+  const logId = await trackModelCall({
+    userId,
+    useCase: "chat_response",
+    result,
+    systemPromptHash: sendSystemPromptHash,
+    injectedBlocks: sendInjectedBlocks,
+    messageWindow: sendMessageWindow,
+  });
   if (result.generationId && logId) backfillCost(result.generationId, logId);
   await rollDailyUsage(userId, result.usage.totalTokens);
 

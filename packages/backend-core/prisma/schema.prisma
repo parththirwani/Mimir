@@ -117,7 +117,11 @@ model ExtractedFact {
   subject        String
   fact           String   @db.Text
   embedding      Unsupported("vector(1536)")? // raw $executeRaw access only (mirrors Agent.embedding)
+  factSearch     Unsupported("tsvector")? // generated to_tsvector('english', subject || ' ' || fact); raw SQL only (see migration)
   status         String   @default("active") // active | superseded | deleted
+  // open string sets (no PG enum), typed at call sites
+  subjectType    String   @default("other") // person | project | preference | date | credential | other
+  factType       String   @default("attribute") // attribute | event | relationship | instruction
   sourceMessageId String?
   supersedesId   String?
 // SetNull assumes no hard-purge path exists — supersede chains stay
@@ -125,12 +129,33 @@ model ExtractedFact {
   // always resolves to an existing (deleted) row.
   supersedes     ExtractedFact?  @relation("FactSupersedes", fields: [supersedesId], references: [id], onDelete: SetNull)
   supersededBy   ExtractedFact[] @relation("FactSupersedes")
+  outgoingRelations FactRelation[] @relation("FactRelationSource")
+  incomingRelations FactRelation[] @relation("FactRelationTarget")
   deletedAt      DateTime?
   deletedReason  String? // incorrect_extraction | user_requested | manual_correction
   createdAt      DateTime @default(now())
 
   @@index([conversationId, status])
   @@index([conversationId, subject])
+}
+
+// Directed fact-to-fact edge (fact graph). `relationType` is a free text tag
+// (e.g. "affects", "predecessor_of", "example_of"), not an enum — set only by
+// the extraction relation pass, never user-typed. Both FKs indexed for the
+// bidirectional expansion in searchActiveFactsWithRelations.
+model FactRelation {
+  id              String   @id @default(uuid())
+  sourceFactId    String
+  targetFactId    String
+  relationType    String
+  sourceMessageId String?
+  createdAt       DateTime @default(now())
+
+  sourceFact ExtractedFact @relation("FactRelationSource", fields: [sourceFactId], references: [id])
+  targetFact ExtractedFact @relation("FactRelationTarget", fields: [targetFactId], references: [id])
+
+  @@index([sourceFactId])
+  @@index([targetFactId])
 }
 model RefreshToken {
   id        String    @id @default(uuid())
@@ -339,12 +364,18 @@ model ModelCallLog {
   tokensUsed     Int      // total_tokens
   promptTokens   Int?
   completionTokens Int?
-  cachedTokens   Int?     // usage.prompt_tokens_details.cached_tokens — prompt-cache hit signal
+  cachedTokens   Int?     // token: usage.prompt_tokens_details.cached_tokens — prompt-cache hit signal
   finishReason   String?  // normalized finish_reason ("stop" | "length" | "content_filter" | "tool_calls" | "error")
   generationId   String?  // OpenRouter's response id — lets you query /api/v1/generation later for provider-level audit detail
   costCents      Int
   latencyMs      Int
   success        Boolean
+  // 10.7 context snapshot: hashes + the structure (message ids, injected block
+  // ids) of what was fed to the call. References only — text itself is not
+  // duplicated here (it lives in the source tables).
+  systemPromptHash String?
+  injectedBlocks   Json? // ordered [{type, refIds}] — retrieved facts/events injected
+  messageWindow    Json? // ordered message ids that formed the call's context
   createdAt      DateTime @default(now())
 
   @@index([userId, createdAt])

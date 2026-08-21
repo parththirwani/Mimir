@@ -14,7 +14,7 @@ export { callOpenRouter, callEmbeddings, llmConfigFor, modelFor, fetchGeneration
 export type { LlmUseCaseConfig, LlmTool, ToolCall, ToolChoice, LlmCallOptions } from "./openrouter.js";
 export { trackEvent } from "./analytics.js";
 export { trackModelCall, backfillCost, rollDailyUsage } from "./usage.js";
-export { searchActiveFacts } from "./facts.js";
+export { searchActiveFacts, searchActiveFactsWithRelations } from "./facts.js";
 export type { FactHit } from "./facts.js";
 export { loadPrompt, chatSystemPrompt, executionSystemPrompt, oneShotSystemPrompt, frameResultForUser } from "./prompts.js";
 export type { FrameResultOptions } from "./prompts.js";

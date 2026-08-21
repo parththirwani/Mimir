@@ -17,7 +17,7 @@ import type { ChatResult, LlmMessage } from "@mimir/shared-types";
 // The READ path (searchActiveFacts / FactHit) lives in packages/backend-core
 // (shared with the api's reply-context injection) and is re-exported here so
 // this module stays the single import surface for callers/tests.
-export { searchActiveFacts, type FactHit } from "@mimir/backend-core";
+export { searchActiveFacts, searchActiveFactsWithRelations, type FactHit } from "@mimir/backend-core";
 
 const prisma = getPrismaClient();
 
@@ -26,12 +26,16 @@ export type LlmCaller = (messages: LlmMessage[], options?: { useCase?: string })
 export interface ExtractedFactInput {
   subject: string;
   fact: string;
+  subjectType: string;
+  factType: string;
 }
 
 export interface FactCandidate {
   subject: string;
   fact: string;
   sourceMessageId?: string;
+  subjectType?: string;
+  factType?: string;
 }
 
 // Fact statuses. `status` is a plain string in the DB (see schema comment: keeps
@@ -42,6 +46,11 @@ export type FactStatus = "active" | "superseded" | "deleted";
 // Deletion reasons. Short, canonical set; stored as free string so a future
 // caller can extend without a migration.
 export type FactDeleteReason = "incorrect_extraction" | "user_requested" | "manual_correction";
+
+// Open string sets for typed facts (no PG enum). Stored as-is; these are the
+// TS-level vocabularies at call sites.
+export const SUBJECT_TYPES = new Set(["person", "project", "preference", "date", "credential", "other"]);
+export const FACT_TYPES = new Set(["attribute", "event", "relationship", "instruction"]);
 
 const EXTRACT_SYSTEM = loadPrompt("extract_facts.md");
 const CONFLICT_SYSTEM = loadPrompt("fact_conflict.md");
@@ -61,7 +70,54 @@ export function parseExtractedFacts(raw: string): ExtractedFactInput[] {
       const s = f as Record<string, unknown>;
       if (typeof s.subject !== "string" || !s.subject.trim()) continue;
       if (typeof s.fact !== "string" || !s.fact.trim()) continue;
-      out.push({ subject: s.subject.trim(), fact: s.fact.trim() });
+      out.push({
+        subject: s.subject.trim(),
+        fact: s.fact.trim(),
+        subjectType: typeof s.subjectType === "string" ? s.subjectType.trim() : "other",
+        factType: typeof s.factType === "string" ? s.factType.trim() : "attribute",
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+// Type-compat gate for relation candidates: linked facts should be about
+// compatible kinds (person<->person, project<->project...). `other` (subject)
+// and `attribute` (fact) are universal fallbacks — they never block an edge, so
+// extraction can't wedge on an ambiguous type.
+export function isTypeCompatible(a: ExtractedFactInput | FactCandidate, b: { subjectType: string; factType: string }): boolean {
+  const as = a.subjectType ?? "other";
+  const bs = b.subjectType ?? "other";
+  if (as === "other" || bs === "other") return true;
+  return as === bs;
+}
+
+// Parse a relation-extraction response: {relations:[{sourceIndex,targetIndex,relationType,confidence}]}.
+// Fail-open: any error -> []. Low-confidence and malformed entries are dropped here.
+export function parseFactRelations(raw: string): Array<{
+  sourceIndex: number;
+  targetIndex: number;
+  relationType: string;
+  confidence: number;
+}> {
+  try {
+    const cleaned = raw.replace(/```json|```/g, "").trim();
+    const json = JSON.parse(cleaned) as { relations?: unknown };
+    if (!Array.isArray(json.relations)) return [];
+    const out: Array<{ sourceIndex: number; targetIndex: number; relationType: string; confidence: number }> = [];
+    for (const r of json.relations) {
+      if (typeof r !== "object" || r === null) continue;
+      const o = r as Record<string, unknown>;
+      if (typeof o.sourceIndex !== "number" || typeof o.targetIndex !== "number") continue;
+      if (typeof o.confidence !== "number" || o.confidence < 0.6) continue;
+      out.push({
+        sourceIndex: o.sourceIndex,
+        targetIndex: o.targetIndex,
+        relationType: typeof o.relationType === "string" ? o.relationType.trim() : "related",
+        confidence: o.confidence,
+      });
     }
     return out;
   } catch {
@@ -238,6 +294,7 @@ export async function extractFacts(
   }
 
   // Insert facts (with embeds + supersede links) and flip superseded rows.
+  const newIds = new Array<string | null>(facts.length).fill(null);
   for (let i = 0; i < facts.length; i++) {
     const f = facts[i]!;
     const vec = embs[i];
@@ -251,6 +308,8 @@ export async function extractFacts(
           userId,
           subject: f.subject,
           fact: f.fact,
+          subjectType: f.subjectType,
+          factType: f.factType,
           status: "active",
           sourceMessageId: raw[0]?.id,
           ...(supersedesExisting ? { supersedesId: supersedesExisting } : {}),
@@ -262,6 +321,8 @@ export async function extractFacts(
       getLogger().error({ err: e, conversationId, subject: f.subject }, "fact insert failed (skip)");
       continue;
     }
+
+    newIds[i] = newId;
 
     if (vec && newId) {
       try {
@@ -289,7 +350,99 @@ export async function extractFacts(
     inserted += 1;
   }
 
+  // Relation pass (10.6): propose edges from new facts to nearby EXISTING active
+  // facts. One cheap batched call; fail-open. Pre-filter candidate pairs by type
+  // compatibility (other/attribute always pass) so the model only judges
+  // plausible edges and the pass never wedges on an ambiguous type.
+  await extractRelations(conversationId, userId, facts, newIds, raw[0]?.id, caller);
+
   return { inserted, superseded };
+}
+
+const RELATION_SYSTEM = loadPrompt("fact_relations.md");
+
+interface ExistingFactRef {
+  id: string;
+  subject: string;
+  fact: string;
+  subjectType: string;
+}
+
+// Load up to `limit` ACTIVE facts already in the conversation — the target pool
+// for new-fact relation edges. Fail-open: query error -> empty pool.
+async function loadExistingActiveFacts(conversationId: string, limit: number, excludeIds: string[] = []): Promise<ExistingFactRef[]> {
+  try {
+    return await prisma.extractedFact.findMany({
+      where: {
+        conversationId,
+        status: "active",
+        ...(excludeIds.length > 0 ? { id: { notIn: excludeIds } } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      select: { id: true, subject: true, fact: true, subjectType: true },
+    });
+  } catch (e) {
+    getLogger().warn({ err: e, conversationId }, "existing-fact pool load failed (relation pass skip)");
+    return [];
+  }
+}
+
+// One batched relation-proposal call over (newFacts x recentExisting). Any
+// failure -> no edges written, never a throw (fail-open).
+async function extractRelations(
+  conversationId: string,
+  userId: string,
+  facts: ExtractedFactInput[],
+  newIds: (string | null)[],
+  sourceMessageId: string | undefined,
+  caller: LlmCaller,
+): Promise<void> {
+  try {
+    // Exclude this batch's own rows from the "existing" pool — otherwise the
+    // just-inserted facts (newest active) swallow the 10-slot window and the
+    // model proposes new->new/self edges instead of linking to PRIOR facts
+    // (the point of the pass).
+    const ownIds = newIds.filter(Boolean) as string[];
+    const pool = await loadExistingActiveFacts(conversationId, 10, ownIds);
+    if (pool.length === 0) return;
+
+    const renderNew = facts.map((f, i) => `${i}. ${f.fact}`).join("\n");
+    const renderExisting = pool.map((e, i) => `${i}. ${e.fact}`).join("\n");
+    const userText = `NEW facts:\n${renderNew}\n\nEXISTING facts:\n${renderExisting}`;
+    const result = await caller(
+      [{ role: "system", content: RELATION_SYSTEM }, { role: "user", content: userText }],
+      { useCase: "fact_relations" },
+    );
+    await trackModelCall({ userId, useCase: "fact_relations", result });
+
+    for (const r of parseFactRelations(result.content)) {
+      const src = facts[r.sourceIndex];
+      const tgt = pool[r.targetIndex];
+      const srcId = newIds[r.sourceIndex];
+      if (!src || !tgt || !srcId) continue;
+      // type pre-filter: compatible subject types only; `other` always passes
+      // so extraction never blocks on an ambiguous type.
+      if (!isTypeCompatible(
+        { subject: src.subject, fact: src.fact, subjectType: src.subjectType, factType: src.factType },
+        { subjectType: tgt.subjectType, factType: "attribute" },
+      )) continue;
+      try {
+        await prisma.factRelation.create({
+          data: {
+            sourceFactId: srcId,
+            targetFactId: tgt.id,
+            relationType: r.relationType,
+            sourceMessageId,
+          },
+        });
+      } catch (e) {
+        getLogger().warn({ err: e, conversationId, source: src.subject, target: tgt.subject }, "relation insert failed (skip)");
+      }
+    }
+  } catch (e) {
+    getLogger().warn({ err: e, conversationId }, "fact relation pass failed (skip)");
+  }
 }
 
 // ---------------------------------------------------------------------------

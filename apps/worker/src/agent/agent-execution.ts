@@ -60,13 +60,16 @@ async function loadContext(agentId: string, context?: string): Promise<{ systemN
   return { systemNote, history };
 }
 
-// Once event history exceeds the budget (count OR estimated token size — events
-// embed full LLM output, so ~4 events can already fill the token cap and
-// loadContext truncates), fold the events that no longer fit into
-// Agent.contextSummary and delete them, so they aren't re-counted every run.
+// Two-stage compaction (10.7): first PRUNE oversized tool-result payloads within
+// the active window; only if the token budget is still exceeded, fall through
+// to the existing contextSummary fold. Both stages write an AgentEvent audit
+// row ('pruned'|'summarized') — the trail is never skipped.
 export async function foldOldEvents(agentId: string): Promise<void> {
   const agent = await prisma.agent.findUnique({ where: { id: agentId } });
   if (!agent) return;
+
+  const pruned = await pruneOversizedEvents(agentId);
+  if (await fitsBudget(agentId)) return;
 
   const keep = await prisma.agentEvent.findMany({
     where: { agentId },
@@ -101,8 +104,74 @@ export async function foldOldEvents(agentId: string): Promise<void> {
   await prisma.$transaction([
     prisma.agent.update({ where: { id: agentId }, data: { contextSummary: merged } }),
     prisma.agentEvent.deleteMany({ where: { id: { in: foldableIds } } }),
+    prisma.agentEvent.create({
+      data: { agentId, eventType: "summarized", payload: { folded: foldableIds.length, events: foldableIds } },
+    }),
   ]);
-  getLogger().info({ agentId, folded: foldable.length }, "older agent events folded into contextSummary");
+  getLogger().info({ agentId, folded: foldable.length, pruned }, "older agent events folded into contextSummary");
+}
+
+// Prune stage of compaction: truncate the oversized string fields of the
+// largest event payloads in the active window (keeping the call/result pair +
+// metadata), then re-check budget. Truncation happens IN PLACE (no deletion)
+// so retrieval/audit still see the event, just with a bounded body.
+const PRUNE_PAYLOAD_BYTES = 4_000; // ~1k tokens is plenty for a context block
+
+async function pruneOversizedEvents(agentId: string): Promise<number> {
+  let keep;
+  try {
+    keep = await prisma.agentEvent.findMany({
+      where: { agentId },
+      orderBy: { createdAt: "desc" },
+      take: AGENT_CONTEXT_MAX_EVENTS,
+    });
+  } catch (e) {
+    getLogger().error({ err: e, agentId }, "prune: event load failed (skip)");
+    return 0;
+  }
+
+  const oversized = keep.filter((ev) => JSON.stringify(ev.payload).length > PRUNE_PAYLOAD_BYTES);
+  let pruned = 0;
+  for (const ev of oversized) {
+    const src = (ev.payload ?? {}) as Record<string, unknown>;
+    const next: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(src)) {
+      next[k] = typeof v === "string" && v.length > PRUNE_PAYLOAD_BYTES ? `${v.slice(0, PRUNE_PAYLOAD_BYTES)}…[truncated]` : v;
+    }
+    next._pruned = true;
+    try {
+      await prisma.agentEvent.update({ where: { id: ev.id }, data: { payload: next as unknown as InputJsonValue } });
+      pruned += 1;
+    } catch (e) {
+      getLogger().warn({ err: e, agentId, eventId: ev.id }, "prune update failed (skip)");
+    }
+  }
+  if (pruned > 0) {
+    try {
+      await prisma.agentEvent.create({
+        data: { agentId, eventType: "pruned", payload: { events: oversized.map((e) => e.id) } },
+      });
+    } catch (e) {
+      getLogger().error({ err: e, agentId }, "prune audit write failed");
+    }
+  }
+  return pruned;
+}
+
+// True when the active window now fits the token budget (nothing left to fold).
+async function fitsBudget(agentId: string): Promise<boolean> {
+  const keep = await prisma.agentEvent.findMany({
+    where: { agentId },
+    orderBy: { createdAt: "desc" },
+    take: AGENT_CONTEXT_MAX_EVENTS,
+  });
+  let chars = 0;
+  for (const ev of keep) {
+    const line = `[${ev.eventType}] ${JSON.stringify(ev.payload)}`;
+    if (chars + line.length > AGENT_CONTEXT_MAX_TOKENS * 4) return false;
+    chars += line.length;
+  }
+  return true;
 }
 
 async function safeFold(agentId: string): Promise<void> {

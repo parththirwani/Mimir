@@ -7,7 +7,7 @@ process.env.REDIS_URL = "redis://localhost:6379";
 process.env.JWT_SECRET = "fact-extraction-test-secret";
 
 const { getPrismaClient } = await import("@mimir/backend-core");
-const { deleteFact, extractFacts, searchActiveFacts, parseExtractedFacts } = await import("../agent/fact-extraction.js");
+const { deleteFact, extractFacts, searchActiveFacts, searchActiveFactsWithRelations, parseExtractedFacts, parseFactRelations } = await import("../agent/fact-extraction.js");
 
 const prisma = getPrismaClient();
 
@@ -30,10 +30,12 @@ const vecLiteral = (v: number[]) => `[${v.join(",")}]`;
 // responses and `mock.judge` for fact_conflict responses.
 const mock: {
   extract: () => string;
+  relations: () => string;
   judge: () => string;
   throwOnExtract?: boolean;
 } = {
   extract: () => '{"facts":[]}',
+  relations: () => '{"relations":[]}',
   judge: () => '{"supersede":[false]}',
 };
 
@@ -42,6 +44,7 @@ const chat = (content: string): ChatResult => ({ content, model: "m", latencyMs:
 
 async function fakeCaller(messages: LlmMessage[], options?: { useCase?: string }): Promise<ChatResult> {
   if (options?.useCase === "fact_conflict") return chat(mock.judge());
+  if (options?.useCase === "fact_relations") return chat(mock.relations());
   if (mock.throwOnExtract) throw new Error("extraction LLM down");
   return chat(mock.extract());
 }
@@ -66,12 +69,22 @@ async function addMessages(contents: string[], from: Date, to: Date): Promise<vo
 
 const listAll = () => prisma.extractedFact.findMany({ where: { conversationId } });
 
+// Clear facts + any FactRelation rows referencing them (relations FK to facts,
+// so facts must be removed last). Used by every test that resets the slate.
+async function clearFacts(): Promise<void> {
+  const ids = (await prisma.extractedFact.findMany({ where: { conversationId }, select: { id: true } })).map((f) => f.id);
+  if (ids.length > 0) {
+    await prisma.factRelation.deleteMany({ where: { OR: [{ sourceFactId: { in: ids } }, { targetFactId: { in: ids } }] } });
+  }
+  await prisma.extractedFact.deleteMany({ where: { conversationId } });
+}
+
 beforeAll(async () => {
   await createUserConversation();
 });
 
 afterAll(async () => {
-  await prisma.extractedFact.deleteMany({ where: { conversationId } });
+  await clearFacts();
   await prisma.message.deleteMany({ where: { conversationId } });
   await prisma.conversation.deleteMany({ where: { id: conversationId } });
   await prisma.modelCallLog.deleteMany({ where: { userId } });
@@ -157,12 +170,86 @@ describe("extractFacts — write path", () => {
     expect(parseExtractedFacts("not json at all")).toEqual([]);
     expect(parseExtractedFacts('{"facts":[{"subject":"x"}]}')).toEqual([]); // missing fact
   });
+
+  test("typed facts default to other/attribute when absent, preserve when present", async () => {
+    expect(parseExtractedFacts('{"facts":[{"subject":"p","fact":"f"}]}')).toEqual([
+      { subject: "p", fact: "f", subjectType: "other", factType: "attribute" },
+    ]);
+    expect(parseExtractedFacts('{"facts":[{"subject":"p","fact":"f","subjectType":"person","factType":"event"}]}')).toEqual([
+      { subject: "p", fact: "f", subjectType: "person", factType: "event" },
+    ]);
+  });
+});
+
+describe("parseFactRelations — confidence gate + shape", () => {
+  test("drops confidence < 0.6 and malformed entries, keeps >= 0.6", () => {
+    const ok = '{"relations":[{"sourceIndex":0,"targetIndex":1,"relationType":"affects","confidence":0.9},{"sourceIndex":0,"targetIndex":2,"confidence":0.4}]}';
+    expect(parseFactRelations(ok)).toEqual([{ sourceIndex: 0, targetIndex: 1, relationType: "affects", confidence: 0.9 }]);
+    expect(parseFactRelations("garbage")).toEqual([]);
+  });
+});
+
+describe("extractFacts — 10.6 relation graph", () => {
+  test("a relation is written between a new fact and a compatible existing fact", async () => {
+    await clearFacts();
+    const existing = await prisma.extractedFact.create({
+      data: { conversationId, userId, subject: "acme", fact: "Acme builds analytics software", status: "active", subjectType: "project", factType: "attribute" },
+    });
+
+    const from = new Date();
+    const to = new Date(from.getTime() + 30000);
+    await addMessages(["Acme is opening a Berlin office."], from, to);
+    mock.extract = () => '{"facts":[{"subject":"acme","fact":"acme opens berlin office","subjectType":"project","factType":"event"}]}';
+    mock.relations = () => '{"relations":[{"sourceIndex":0,"targetIndex":0,"relationType":"predecessor_of","confidence":0.9}]}';
+
+    await extractFacts(conversationId, from, to, { caller: fakeCaller, embed });
+
+    const rel = await prisma.factRelation.findFirst({ where: { targetFactId: existing.id } });
+    expect(rel?.relationType).toBe("predecessor_of");
+    mock.relations = () => '{"relations":[]}';
+  });
+
+  test("a low-confidence relation is not written", async () => {
+    await clearFacts();
+    const existing = await prisma.extractedFact.create({
+      data: { conversationId, userId, subject: "acme", fact: "Acme builds analytics software", status: "active", subjectType: "project", factType: "attribute" },
+    });
+
+    const from = new Date();
+    const to = new Date(from.getTime() + 30000);
+    await addMessages(["Acme is opening a Berlin office."], from, to);
+    mock.extract = () => '{"facts":[{"subject":"acme","fact":"acme opens berlin office","subjectType":"project","factType":"event"}]}';
+    mock.relations = () => '{"relations":[{"sourceIndex":0,"targetIndex":0,"relationType":"predecessor_of","confidence":0.3}]}';
+
+    await extractFacts(conversationId, from, to, { caller: fakeCaller, embed });
+
+    expect(await prisma.factRelation.count({ where: { targetFactId: existing.id } })).toBe(0);
+    mock.relations = () => '{"relations":[]}';
+  });
+
+  test("incompatible subject types produce no relation edge", async () => {
+    await clearFacts();
+    const existing = await prisma.extractedFact.create({
+      data: { conversationId, userId, subject: "acme", fact: "Acme Corp builds software", status: "active", subjectType: "credential", factType: "attribute" },
+    });
+
+    const from = new Date();
+    const to = new Date(from.getTime() + 30000);
+    await addMessages(["acme is opening berlin office"], from, to);
+    mock.extract = () => '{"facts":[{"subject":"acme","fact":"berlin office","subjectType":"person","factType":"event"}]}';
+    mock.relations = () => '{"relations":[{"sourceIndex":0,"targetIndex":0,"relationType":"x","confidence":0.9}]}';
+
+    await extractFacts(conversationId, from, to, { caller: fakeCaller, embed });
+
+    expect(await prisma.factRelation.count({ where: { targetFactId: existing.id } })).toBe(0);
+    mock.relations = () => '{"relations":[]}';
+  });
 });
 
 describe("searchActiveFacts — retrieval (ACTIVE only, by construction)", () => {
   test("returns only ACTIVE facts ranked by relevance, never superseded", async () => {
     // Clean slate for this conversation to control the vector space precisely.
-    await prisma.extractedFact.deleteMany({ where: { conversationId } });
+    await clearFacts();
     await prisma.extractedFact.create({
       data: { conversationId, userId, subject: "proj", fact: "deadline is Friday", status: "active" },
     });
@@ -199,7 +286,7 @@ describe("searchActiveFacts — retrieval (ACTIVE only, by construction)", () =>
   // the active control row MUST come back, and a superseded row sharing the
   // exact top embedding MUST NOT.
   test("real query excludes an inactive-status row that shares the top embedding", async () => {
-    await prisma.extractedFact.deleteMany({ where: { conversationId } });
+    await clearFacts();
     const active = await prisma.extractedFact.create({
       data: { conversationId, userId, subject: "proj", fact: "active control", status: "active" },
     });
@@ -223,6 +310,42 @@ describe("searchActiveFacts — retrieval (ACTIVE only, by construction)", () =>
   });
 });
 
+describe("searchActiveFactsWithRelations — 10.8 hybrid + 10.6 expansion", () => {
+  test("lexical side alone returns a fact when the embed fails (fail-open to lexical)", async () => {
+    await clearFacts();
+    await prisma.extractedFact.create({
+      data: { conversationId, userId, subject: "rent", fact: "our rent is 1500 dollars a month", status: "active" },
+    });
+    const hits = await searchActiveFactsWithRelations(conversationId, "how much rent", {
+      embed: async () => {
+        throw new Error("embed down");
+      },
+    });
+    expect(hits.some((h) => h.fact.includes("rent"))).toBe(true);
+  });
+
+  test("vector hit surfaces and a relation neighbor expands it", async () => {
+    await clearFacts();
+    const rent = await prisma.extractedFact.create({
+      data: { conversationId, userId, subject: "rent", fact: "office space costs 900 monthly", status: "active" },
+    });
+    const office = await prisma.extractedFact.create({
+      data: { conversationId, userId, subject: "office", fact: "kkar zzibble wuzzle blynk", status: "active" },
+    });
+    await prisma.$executeRaw`UPDATE "ExtractedFact" SET embedding = ${vecLiteral(vec(0))}::vector WHERE id = ${rent.id}`;
+    await prisma.$executeRaw`UPDATE "ExtractedFact" SET embedding = ${vecLiteral(vec(1))}::vector WHERE id = ${office.id}`;
+    await prisma.factRelation.create({ data: { sourceFactId: rent.id, targetFactId: office.id, relationType: "affects" } });
+
+    const hits = await searchActiveFactsWithRelations(conversationId, "cost of rent", {
+      embed: async () => vec(0),
+    });
+    expect(hits.map((h) => h.id)).toContain(rent.id);
+    // the office row has no lexical overlap ("kkar zzibble...") and ranks low on
+    // the vector side — only the relation edge to `rent` surfaces it.
+    expect(hits.some((h) => h.id === office.id)).toBe(true);
+  });
+});
+
 describe("deleteFact — soft delete, separate path from supersede", () => {
   test("deleteFact on an active fact flips to deleted with deletedAt/deletedReason, row kept", async () => {
     const row = await prisma.extractedFact.create({
@@ -240,7 +363,7 @@ describe("deleteFact — soft delete, separate path from supersede", () => {
 
   test("a deleted fact NEVER appears in top-K retrieval even when it would rank highest", async () => {
     // Clean slate.
-    await prisma.extractedFact.deleteMany({ where: { conversationId } });
+    await clearFacts();
     const active = await prisma.extractedFact.create({
       data: { conversationId, userId, subject: "d", fact: "active fact", status: "active" },
     });

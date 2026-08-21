@@ -57,6 +57,14 @@ export const AGGREGATE_OUTPUT_MAX_CHARS = 8000;
 // search. Bounded to keep prompt context lean.
 export const FACT_EXTRACTION_TOP_K = 5;
 
+// Reciprocal Rank Fusion constant (1/(K+rank)); the +K damps low ranks so a
+// single cheap rank doesn't dominate the fused score.
+export const FACT_RRF_K = 60;
+
+// Hard cap on facts injected into reply context after relation expansion —
+// relations can fan a top-K hit into many neighbors, so bound total injection.
+export const FACT_INJECT_CAP = 10;
+
 // Cosine-similarity floor before routing a same-subject fact pair to the
 // contradiction judge. The subject match is the real discriminator (different
 // things get different subjects); this is only a floor to avoid spending a judge

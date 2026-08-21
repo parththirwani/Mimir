@@ -13,11 +13,17 @@ export async function trackModelCall({
   useCase,
   result,
   error,
+  systemPromptHash,
+  injectedBlocks,
+  messageWindow,
 }: {
   userId: string;
   useCase: string;
   result?: ChatResult;
   error?: string;
+  systemPromptHash?: string;
+  injectedBlocks?: Array<{ type: string; refIds: string[] }>;
+  messageWindow?: string[];
 }): Promise<string | null> {
   try {
     const log = await prisma.modelCallLog.create({
@@ -35,6 +41,9 @@ export async function trackModelCall({
         costCents: 0,
         latencyMs: result?.latencyMs ?? 0,
         success: !!result && !error,
+        systemPromptHash,
+        injectedBlocks,
+        messageWindow,
       },
     });
     return log.id;

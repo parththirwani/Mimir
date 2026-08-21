@@ -17,7 +17,8 @@
     "surface": { "model": "~deepseek/deepseek-v4-flash-latest", "maxInputTokens": 8000, "maxOutputTokens": 2048, "temperature": 0.5 },
     "evaluation": { "model": "openai/gpt-4o-mini", "maxInputTokens": 4000, "maxOutputTokens": 512, "temperature": 0.1 },
     "fact_extraction": { "model": "openai/gpt-4o-mini", "maxInputTokens": 4000, "maxOutputTokens": 1024, "temperature": 0.1 },
-    "fact_conflict": { "model": "openai/gpt-4o-mini", "maxInputTokens": 4000, "maxOutputTokens": 256, "temperature": 0.1 }
+    "fact_conflict": { "model": "openai/gpt-4o-mini", "maxInputTokens": 4000, "maxOutputTokens": 256, "temperature": 0.1 },
+    "fact_relations": { "model": "openai/gpt-4o-mini", "maxInputTokens": 4000, "maxOutputTokens": 1024, "temperature": 0.1 }
   },
   "embeddings": { "model": "openai/text-embedding-3-small" }
 }
