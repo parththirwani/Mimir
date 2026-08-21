@@ -96,7 +96,6 @@ const OUT_DIR = join(process.cwd(), "results", "eval-runs");
 // Skip passes already completed (judged) in ANY prior date file, keyed by
 // question uid, so a repeated or interrupted manual run never reprocesses
 // finished work. Scan every locomo-*.jsonl so completed work is permanent.
-// ponytail: re-reads all date files on each run; fine at this size, index if it grows.
 function loadCompletedUids(): Set<string> {
   const set = new Set<string>();
   const files = existsSync(OUT_DIR)

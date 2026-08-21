@@ -1,5 +1,4 @@
 import {
-  FACT_NEAR_THRESHOLD,
   getLogger,
   getPrismaClient,
   loadPrompt,
@@ -9,19 +8,19 @@ import {
 } from "@mimir/backend-core";
 import type { ChatResult, LlmMessage } from "@mimir/shared-types";
 
-// Flat, atomically-retrievable durable facts extracted from the thread,
-// alongside the narrative ConversationSummary. Extraction is a fixed pipeline
-// (NOT agent-managed memory): run on the same sweep tick as summarization over
-// the same delta message range, then stored for retrieval.
-//
-// The READ path (searchActiveFacts / FactHit) lives in packages/backend-core
-// (shared with the api's reply-context injection) and is re-exported here so
-// this module stays the single import surface for callers/tests.
-export { searchActiveFacts, searchActiveFactsWithRelations, type FactHit } from "@mimir/backend-core";
+
+export {
+  searchActiveFacts,
+  searchActiveFactsWithRelations,
+  type FactHit,
+} from "@mimir/backend-core";
 
 const prisma = getPrismaClient();
 
-export type LlmCaller = (messages: LlmMessage[], options?: { useCase?: string }) => Promise<ChatResult>;
+export type LlmCaller = (
+  messages: LlmMessage[],
+  options?: { useCase?: string },
+) => Promise<ChatResult>;
 
 export interface ExtractedFactInput {
   subject: string;
@@ -45,15 +44,29 @@ export type FactStatus = "active" | "superseded" | "deleted";
 
 // Deletion reasons. Short, canonical set; stored as free string so a future
 // caller can extend without a migration.
-export type FactDeleteReason = "incorrect_extraction" | "user_requested" | "manual_correction";
+export type FactDeleteReason =
+  "incorrect_extraction" | "user_requested" | "manual_correction";
 
 // Open string sets for typed facts (no PG enum). Stored as-is; these are the
 // TS-level vocabularies at call sites.
-export const SUBJECT_TYPES = new Set(["person", "project", "preference", "date", "credential", "other"]);
-export const FACT_TYPES = new Set(["attribute", "event", "relationship", "instruction"]);
+export const SUBJECT_TYPES = new Set([
+  "person",
+  "project",
+  "preference",
+  "date",
+  "credential",
+  "other",
+]);
+export const FACT_TYPES = new Set([
+  "attribute",
+  "event",
+  "relationship",
+  "instruction",
+]);
 
 const EXTRACT_SYSTEM = loadPrompt("extract_facts.md");
 const CONFLICT_SYSTEM = loadPrompt("fact_conflict.md");
+const SUPERSEDE_CANDIDATE_K = 5;
 
 // ---------------------------------------------------------------------------
 // Parsing (fail-open: unparseable -> empty list, never a throw)
@@ -73,8 +86,10 @@ export function parseExtractedFacts(raw: string): ExtractedFactInput[] {
       out.push({
         subject: s.subject.trim(),
         fact: s.fact.trim(),
-        subjectType: typeof s.subjectType === "string" ? s.subjectType.trim() : "other",
-        factType: typeof s.factType === "string" ? s.factType.trim() : "attribute",
+        subjectType:
+          typeof s.subjectType === "string" ? s.subjectType.trim() : "other",
+        factType:
+          typeof s.factType === "string" ? s.factType.trim() : "attribute",
       });
     }
     return out;
@@ -87,7 +102,10 @@ export function parseExtractedFacts(raw: string): ExtractedFactInput[] {
 // compatible kinds (person<->person, project<->project...). `other` (subject)
 // and `attribute` (fact) are universal fallbacks — they never block an edge, so
 // extraction can't wedge on an ambiguous type.
-export function isTypeCompatible(a: ExtractedFactInput | FactCandidate, b: { subjectType: string; factType: string }): boolean {
+export function isTypeCompatible(
+  a: ExtractedFactInput | FactCandidate,
+  b: { subjectType: string; factType: string },
+): boolean {
   const as = a.subjectType ?? "other";
   const bs = b.subjectType ?? "other";
   if (as === "other" || bs === "other") return true;
@@ -106,16 +124,28 @@ export function parseFactRelations(raw: string): Array<{
     const cleaned = raw.replace(/```json|```/g, "").trim();
     const json = JSON.parse(cleaned) as { relations?: unknown };
     if (!Array.isArray(json.relations)) return [];
-    const out: Array<{ sourceIndex: number; targetIndex: number; relationType: string; confidence: number }> = [];
+    const out: Array<{
+      sourceIndex: number;
+      targetIndex: number;
+      relationType: string;
+      confidence: number;
+    }> = [];
     for (const r of json.relations) {
       if (typeof r !== "object" || r === null) continue;
       const o = r as Record<string, unknown>;
-      if (typeof o.sourceIndex !== "number" || typeof o.targetIndex !== "number") continue;
+      if (
+        typeof o.sourceIndex !== "number" ||
+        typeof o.targetIndex !== "number"
+      )
+        continue;
       if (typeof o.confidence !== "number" || o.confidence < 0.6) continue;
       out.push({
         sourceIndex: o.sourceIndex,
         targetIndex: o.targetIndex,
-        relationType: typeof o.relationType === "string" ? o.relationType.trim() : "related",
+        relationType:
+          typeof o.relationType === "string"
+            ? o.relationType.trim()
+            : "related",
         confidence: o.confidence,
       });
     }
@@ -150,9 +180,13 @@ export function parseConflictVerdict(raw: string, count: number): boolean[] {
 interface ExtractDeps {
   caller?: LlmCaller;
   embed?: (text: string) => Promise<number[]>;
+  write?: boolean;
 }
 
-async function embedVector(embed: (text: string) => Promise<number[]>, text: string): Promise<number[] | null> {
+async function embedVector(
+  embed: (text: string) => Promise<number[]>,
+  text: string,
+): Promise<number[] | null> {
   try {
     const v = await embed(text);
     return v.length > 0 ? v : null;
@@ -165,7 +199,10 @@ async function embedVector(embed: (text: string) => Promise<number[]>, text: str
 // Contradiction judge over a batch of candidate (existingActive, newFact) pairs,
 // one cheap LLM call instead of one per pair.
 async function judgeContradictions(
-  pairs: Array<{ existing: { id: string; subject: string; fact: string }; fresh: ExtractedFactInput }>,
+  pairs: Array<{
+    existing: { id: string; subject: string; fact: string };
+    fresh: ExtractedFactInput;
+  }>,
   userId: string,
   caller: LlmCaller,
 ): Promise<Set<number>> {
@@ -181,8 +218,15 @@ async function judgeContradictions(
   try {
     result = await caller(messages, { useCase: "fact_conflict" });
   } catch (e) {
-    getLogger().warn({ err: e }, "fact conflict judge failed; keeping both active (fail-open)");
-    await trackModelCall({ userId, useCase: "fact_conflict", error: (e as Error)?.message ?? String(e) });
+    getLogger().warn(
+      { err: e },
+      "fact conflict judge failed; keeping both active (fail-open)",
+    );
+    await trackModelCall({
+      userId,
+      useCase: "fact_conflict",
+      error: (e as Error)?.message ?? String(e),
+    });
     return new Set();
   }
   await trackModelCall({ userId, useCase: "fact_conflict", result });
@@ -201,13 +245,21 @@ export async function extractFacts(
 
   let conversation;
   try {
-    conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });
+    conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+    });
   } catch (e) {
-    getLogger().error({ err: e, conversationId }, "extractFacts: conversation lookup failed");
+    getLogger().error(
+      { err: e, conversationId },
+      "extractFacts: conversation lookup failed",
+    );
     return { inserted: 0, superseded: 0 };
   }
   if (!conversation) {
-    getLogger().warn({ conversationId }, "extractFacts: conversation not found");
+    getLogger().warn(
+      { conversationId },
+      "extractFacts: conversation not found",
+    );
     return { inserted: 0, superseded: 0 };
   }
   const userId = conversation.userId;
@@ -221,7 +273,10 @@ export async function extractFacts(
       select: { id: true, role: true, content: true },
     });
   } catch (e) {
-    getLogger().error({ err: e, conversationId }, "extractFacts: message load failed");
+    getLogger().error(
+      { err: e, conversationId },
+      "extractFacts: message load failed",
+    );
     return { inserted: 0, superseded: 0 };
   }
   if (raw.length === 0) return { inserted: 0, superseded: 0 };
@@ -232,15 +287,29 @@ export async function extractFacts(
   let extracted: ChatResult;
   try {
     extracted = await caller(
-      [{ role: "system", content: EXTRACT_SYSTEM }, { role: "user", content: text }],
+      [
+        { role: "system", content: EXTRACT_SYSTEM },
+        { role: "user", content: text },
+      ],
       { useCase: "fact_extraction" },
     );
   } catch (e) {
-    getLogger().warn({ err: e, conversationId }, "fact extraction LLM failed; skip (fail-open)");
-    await trackModelCall({ userId, useCase: "fact_extraction", error: (e as Error)?.message ?? String(e) });
+    getLogger().warn(
+      { err: e, conversationId },
+      "fact extraction LLM failed; skip (fail-open)",
+    );
+    await trackModelCall({
+      userId,
+      useCase: "fact_extraction",
+      error: (e as Error)?.message ?? String(e),
+    });
     return { inserted: 0, superseded: 0 };
   }
-  await trackModelCall({ userId, useCase: "fact_extraction", result: extracted });
+  await trackModelCall({
+    userId,
+    useCase: "fact_extraction",
+    result: extracted,
+  });
 
   const facts = parseExtractedFacts(extracted.content);
   if (facts.length === 0) return { inserted: 0, superseded: 0 };
@@ -249,12 +318,14 @@ export async function extractFacts(
   let superseded = 0;
 
   // Supersede pass, batched: for each new fact, embed it + find its nearest
-  // ACTIVE existing fact on the SAME subject; collect candidate pairs, then run
+  // ACTIVE existing fact in the conversation; collect candidate pairs, then run
   // ONE conflict judge call over the whole batch (one cheap LLM call, not one
-  // per fact). Only close matches (>= FACT_NEAR_THRESHOLD) enter the judge —
-  // below that, given the same subject, they're treated as unrelated and both
-  // stay active without spending a judge call.
-  const pairs: Array<{ existing: { id: string; subject: string; fact: string }; fresh: ExtractedFactInput; freshIndex: number }> = [];
+  // per fact)
+  const pairs: Array<{
+    existing: { id: string; subject: string; fact: string };
+    fresh: ExtractedFactInput;
+    freshIndex: number;
+  }> = [];
   const embs: (number[] | null)[] = new Array(facts.length).fill(null);
 
   for (let i = 0; i < facts.length; i++) {
@@ -264,89 +335,138 @@ export async function extractFacts(
     if (!vec) continue; // fail-open: no embedding -> still insert without supersede link
     const vecLiteral = `[${vec.join(",")}]`;
 
-    let existing: { id: string; subject: string; fact: string; similarity: number } | null = null;
+    let neighbors: {
+      id: string;
+      subject: string;
+      fact: string;
+      similarity: number;
+    }[] = [];
     try {
-      const rows = await prisma.$queryRaw<
+      neighbors = await prisma.$queryRaw<
         { id: string; subject: string; fact: string; similarity: number }[]
       >`SELECT id, subject, fact, 1 - (embedding <=> ${vecLiteral}::vector) AS similarity
          FROM "ExtractedFact"
-         WHERE status = 'active' AND "conversationId" = ${conversationId} AND subject = ${f.subject} AND embedding IS NOT NULL
+         WHERE status = 'active' AND "conversationId" = ${conversationId} AND embedding IS NOT NULL
          ORDER BY embedding <=> ${vecLiteral}::vector
-         LIMIT 1`;
-      existing = rows[0] ?? null;
+         LIMIT ${SUPERSEDE_CANDIDATE_K}`;
     } catch (e) {
-      getLogger().warn({ err: e, conversationId }, "fact nearest-neighbor query failed (insert without supersede)");
+      getLogger().warn(
+        { err: e, conversationId },
+        "fact nearest-neighbor query failed (insert without supersede)",
+      );
     }
 
-    if (existing && existing.similarity >= FACT_NEAR_THRESHOLD) {
-      pairs.push({ existing, fresh: f, freshIndex: i });
-    }
+    for (const nb of neighbors)
+      pairs.push({ existing: nb, fresh: f, freshIndex: i });
   }
 
+  // The judge flags superseded PAIRS (index into `pairs`), one boolean per pair.
   const toSupersede = await judgeContradictions(
     pairs.map((p) => ({ existing: p.existing, fresh: p.fresh })),
     userId,
     caller,
   );
-  const supersedeByFreshIndex = new Map<number, string>();
-  for (const p of pairs) {
-    if (toSupersede.has(p.freshIndex)) supersedeByFreshIndex.set(p.freshIndex, p.existing.id);
+  // One new fact can supersede MULTIPLE old facts (e.g. duplicate echoes of the
+  // same stale value), so collect the set of old ids per fresh fact.
+  const supersedeByFreshIndex = new Map<number, string[]>();
+  for (let k = 0; k < pairs.length; k++) {
+    if (!toSupersede.has(k)) continue;
+    const arr = supersedeByFreshIndex.get(pairs[k]!.freshIndex) ?? [];
+    arr.push(pairs[k]!.existing.id);
+    supersedeByFreshIndex.set(pairs[k]!.freshIndex, arr);
   }
 
   // Insert facts (with embeds + supersede links) and flip superseded rows.
+  const dupKeys = new Set<string>();
+  try {
+    const existing = await prisma.extractedFact.findMany({
+      where: { conversationId, status: "active" },
+      select: { subject: true, fact: true },
+    });
+    for (const e of existing) dupKeys.add(`${e.subject}\u0000${e.fact}`);
+  } catch (e) {
+    getLogger().warn(
+      { err: e, conversationId },
+      "dedup pre-scan failed; inserting without dedup (fail-open)",
+    );
+  }
+
   const newIds = new Array<string | null>(facts.length).fill(null);
   for (let i = 0; i < facts.length; i++) {
     const f = facts[i]!;
     const vec = embs[i];
-    const supersedesExisting = supersedeByFreshIndex.get(i);
+    const supersedesList = supersedeByFreshIndex.get(i) ?? [];
+    const supersedesPrimary = supersedesList[0];
 
-    let newId: string | null = null;
-    try {
-      const created = await prisma.extractedFact.create({
-        data: {
-          conversationId,
-          userId,
-          subject: f.subject,
-          fact: f.fact,
-          subjectType: f.subjectType,
-          factType: f.factType,
-          status: "active",
-          sourceMessageId: raw[0]?.id,
-          ...(supersedesExisting ? { supersedesId: supersedesExisting } : {}),
-        },
-        select: { id: true },
-      });
-      newId = created.id;
-    } catch (e) {
-      getLogger().error({ err: e, conversationId, subject: f.subject }, "fact insert failed (skip)");
+    if (dupKeys.has(`${f.subject}\u0000${f.fact}`)) {
+      getLogger().warn(
+        { conversationId, subject: f.subject, fact: f.fact },
+        "fact dedup: identical active fact exists; skipping insert",
+      );
       continue;
     }
 
-    newIds[i] = newId;
-
-    if (vec && newId) {
+    let newId: string | null = null;
+    const willWrite = deps.write !== false;
+    if (willWrite) {
       try {
-        await prisma.$executeRaw`UPDATE "ExtractedFact" SET embedding = ${`[${vec.join(",")}]`}::vector WHERE id = ${newId}`;
-      } catch (e) {
-        getLogger().warn({ err: e, factId: newId }, "fact embedding write failed (fact kept, no embed)");
-      }
-    }
-
-    if (supersedesExisting) {
-      // The old active fact is superseded by the new one: flip it to
-      // "superseded" (preserved for history, excluded from reads). The new row
-      // carries supersedesId -> old row. We never clear the old row's own
-      // supersedesId — an older chain link before it stays as historical metadata.
-      try {
-        await prisma.extractedFact.updateMany({
-          where: { id: supersedesExisting, status: "active" },
-          data: { status: "superseded" },
+        const created = await prisma.extractedFact.create({
+          data: {
+            conversationId,
+            userId,
+            subject: f.subject,
+            fact: f.fact,
+            subjectType: f.subjectType,
+            factType: f.factType,
+            status: "active",
+            sourceMessageId: raw[0]?.id,
+            ...(supersedesPrimary ? { supersedesId: supersedesPrimary } : {}),
+          },
+          select: { id: true },
         });
+        newId = created.id;
       } catch (e) {
-        getLogger().error({ err: e, factId: supersedesExisting }, "supersede flip failed (new fact kept, old stays active)");
+        getLogger().error(
+          { err: e, conversationId, subject: f.subject },
+          "fact insert failed (skip)",
+        );
+        continue;
       }
-      superseded += 1;
+
+      newIds[i] = newId;
+
+      if (vec && newId) {
+        try {
+          await prisma.$executeRaw`UPDATE "ExtractedFact" SET embedding = ${`[${vec.join(",")}]`}::vector WHERE id = ${newId}`;
+        } catch (e) {
+          getLogger().warn(
+            { err: e, factId: newId },
+            "fact embedding write failed (fact kept, no embed)",
+          );
+        }
+      }
     }
+
+    if (willWrite) {
+      for (const oldId of supersedesList) {
+        // Each old active fact superseded by the new one: flip it to "superseded"
+        // (preserved for history, excluded from reads). The new row carries
+        // supersedesId -> its primary old row. Never clear an old row's own
+        // supersedesId — an older chain link before it stays as historical metadata.
+        try {
+          await prisma.extractedFact.updateMany({
+            where: { id: oldId, status: "active" },
+            data: { status: "superseded" },
+          });
+        } catch (e) {
+          getLogger().error(
+            { err: e, factId: oldId },
+            "supersede flip failed (new fact kept, old stays active)",
+          );
+        }
+      }
+    }
+    superseded += supersedesList.length;
     inserted += 1;
   }
 
@@ -354,7 +474,16 @@ export async function extractFacts(
   // facts. One cheap batched call; fail-open. Pre-filter candidate pairs by type
   // compatibility (other/attribute always pass) so the model only judges
   // plausible edges and the pass never wedges on an ambiguous type.
-  await extractRelations(conversationId, userId, facts, newIds, raw[0]?.id, caller);
+  if (deps.write !== false) {
+    await extractRelations(
+      conversationId,
+      userId,
+      facts,
+      newIds,
+      raw[0]?.id,
+      caller,
+    );
+  }
 
   return { inserted, superseded };
 }
@@ -370,7 +499,11 @@ interface ExistingFactRef {
 
 // Load up to `limit` ACTIVE facts already in the conversation — the target pool
 // for new-fact relation edges. Fail-open: query error -> empty pool.
-async function loadExistingActiveFacts(conversationId: string, limit: number, excludeIds: string[] = []): Promise<ExistingFactRef[]> {
+async function loadExistingActiveFacts(
+  conversationId: string,
+  limit: number,
+  excludeIds: string[] = [],
+): Promise<ExistingFactRef[]> {
   try {
     return await prisma.extractedFact.findMany({
       where: {
@@ -383,7 +516,10 @@ async function loadExistingActiveFacts(conversationId: string, limit: number, ex
       select: { id: true, subject: true, fact: true, subjectType: true },
     });
   } catch (e) {
-    getLogger().warn({ err: e, conversationId }, "existing-fact pool load failed (relation pass skip)");
+    getLogger().warn(
+      { err: e, conversationId },
+      "existing-fact pool load failed (relation pass skip)",
+    );
     return [];
   }
 }
@@ -411,7 +547,10 @@ async function extractRelations(
     const renderExisting = pool.map((e, i) => `${i}. ${e.fact}`).join("\n");
     const userText = `NEW facts:\n${renderNew}\n\nEXISTING facts:\n${renderExisting}`;
     const result = await caller(
-      [{ role: "system", content: RELATION_SYSTEM }, { role: "user", content: userText }],
+      [
+        { role: "system", content: RELATION_SYSTEM },
+        { role: "user", content: userText },
+      ],
       { useCase: "fact_relations" },
     );
     await trackModelCall({ userId, useCase: "fact_relations", result });
@@ -423,10 +562,18 @@ async function extractRelations(
       if (!src || !tgt || !srcId) continue;
       // type pre-filter: compatible subject types only; `other` always passes
       // so extraction never blocks on an ambiguous type.
-      if (!isTypeCompatible(
-        { subject: src.subject, fact: src.fact, subjectType: src.subjectType, factType: src.factType },
-        { subjectType: tgt.subjectType, factType: "attribute" },
-      )) continue;
+      if (
+        !isTypeCompatible(
+          {
+            subject: src.subject,
+            fact: src.fact,
+            subjectType: src.subjectType,
+            factType: src.factType,
+          },
+          { subjectType: tgt.subjectType, factType: "attribute" },
+        )
+      )
+        continue;
       try {
         await prisma.factRelation.create({
           data: {
@@ -437,11 +584,17 @@ async function extractRelations(
           },
         });
       } catch (e) {
-        getLogger().warn({ err: e, conversationId, source: src.subject, target: tgt.subject }, "relation insert failed (skip)");
+        getLogger().warn(
+          { err: e, conversationId, source: src.subject, target: tgt.subject },
+          "relation insert failed (skip)",
+        );
       }
     }
   } catch (e) {
-    getLogger().warn({ err: e, conversationId }, "fact relation pass failed (skip)");
+    getLogger().warn(
+      { err: e, conversationId },
+      "fact relation pass failed (skip)",
+    );
   }
 }
 
@@ -457,7 +610,10 @@ async function extractRelations(
 // fact (independent row) — only the chain pointer (old.supersedesId is null;
 // the newer.supersedesId points at the now-deleted old row, which stays valid
 // since the row still exists).
-export async function deleteFact(factId: string, reason: FactDeleteReason): Promise<void> {
+export async function deleteFact(
+  factId: string,
+  reason: FactDeleteReason,
+): Promise<void> {
   try {
     await prisma.extractedFact.updateMany({
       where: { id: factId, status: { not: "deleted" } },

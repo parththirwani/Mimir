@@ -1,5 +1,11 @@
 import { getLogger, getPrismaClient } from "@mimir/backend-core";
-import { agentJobs, emailJobs, onceJobs, retryPolicy } from "./queues.js";
+import {
+  agentJobs,
+  emailJobs,
+  onceJobs,
+  factExtractionJobs,
+  retryPolicy,
+} from "./queues.js";
 import { pollLoop } from "./poll-loop.js";
 
 const prisma = getPrismaClient();
@@ -9,11 +15,12 @@ const prisma = getPrismaClient();
 // outage mid-spawn loses nothing — the row stays unprocessed until the next tick.
 // jobId = outbox row id so BullMQ dedupes a re-polled row.
 // (BullMQ 6 forbids ':' in custom job IDs, hence the '-' separator.)
-// `queue`/`emailQueue`/`onceQueue` are injectable so tests can hand in their own connections.
+// `queue`/`emailQueue`/`onceQueue`/`factQueue` are injectable so tests can hand in their own connections.
 export async function drainOutbox(
   queue = agentJobs,
   emailQueue = emailJobs,
   onceQueue = onceJobs,
+  factQueue = factExtractionJobs,
   batchSize = 50,
 ): Promise<number> {
   const rows = await prisma.outboxEvent.findMany({
@@ -25,43 +32,131 @@ export async function drainOutbox(
   for (const row of rows) {
     if (row.eventType === "email_send") {
       try {
-        await emailQueue.add("send", row.payload, { ...retryPolicy, jobId: `outbox-${row.id}` });
-        await prisma.outboxEvent.update({ where: { id: row.id }, data: { processedAt: new Date() } });
+        await emailQueue.add("send", row.payload, {
+          ...retryPolicy,
+          jobId: `outbox-${row.id}`,
+        });
+        await prisma.outboxEvent.update({
+          where: { id: row.id },
+          data: { processedAt: new Date() },
+        });
         enqueued += 1;
-        getLogger().info({ outboxId: row.id }, "email send outbox row relayed to email-jobs");
+        getLogger().info(
+          { outboxId: row.id },
+          "email send outbox row relayed to email-jobs",
+        );
       } catch (e) {
-        getLogger().error({ err: e, outboxId: row.id }, "email send outbox relay failed; row left unprocessed for retry");
+        getLogger().error(
+          { err: e, outboxId: row.id },
+          "email send outbox relay failed; row left unprocessed for retry",
+        );
       }
       continue;
     }
     if (row.eventType === "one_shot") {
       try {
-        await onceQueue.add("execute", row.payload, { ...retryPolicy, jobId: `outbox-${row.id}` });
-        await prisma.outboxEvent.update({ where: { id: row.id }, data: { processedAt: new Date() } });
+        await onceQueue.add("execute", row.payload, {
+          ...retryPolicy,
+          jobId: `outbox-${row.id}`,
+        });
+        await prisma.outboxEvent.update({
+          where: { id: row.id },
+          data: { processedAt: new Date() },
+        });
         enqueued += 1;
-        getLogger().info({ outboxId: row.id }, "one-shot outbox row relayed to agent-once");
+        getLogger().info(
+          { outboxId: row.id },
+          "one-shot outbox row relayed to agent-once",
+        );
       } catch (e) {
-        getLogger().error({ err: e, outboxId: row.id }, "one-shot outbox relay failed; row left unprocessed for retry");
+        getLogger().error(
+          { err: e, outboxId: row.id },
+          "one-shot outbox relay failed; row left unprocessed for retry",
+        );
       }
       continue;
     }
-    const payload = row.payload as { agentId?: string; trigger?: string; context?: unknown };
+    if (row.eventType === "extract_facts") {
+      const p = row.payload as { conversationId?: string };
+      if (!p.conversationId) {
+        getLogger().warn(
+          { outboxId: row.id },
+          "extract_facts outbox row missing conversationId; skipping",
+        );
+        await prisma.outboxEvent.update({
+          where: { id: row.id },
+          data: { processedAt: new Date() },
+        });
+        continue;
+      }
+      try {
+        const windowMinute = Math.floor(
+          new Date(
+            (p as { windowEnd?: string }).windowEnd ?? Date.now(),
+          ).getTime() / 60_000,
+        );
+        await factQueue.add(
+          "extract",
+          { conversationId: p.conversationId },
+          { ...retryPolicy, jobId: `fact-${p.conversationId}-${windowMinute}` },
+        );
+        await prisma.outboxEvent.update({
+          where: { id: row.id },
+          data: { processedAt: new Date() },
+        });
+        enqueued += 1;
+        getLogger().info(
+          { outboxId: row.id, conversationId: p.conversationId },
+          "extract_facts outbox row relayed to fact-extraction",
+        );
+      } catch (e) {
+        getLogger().error(
+          { err: e, outboxId: row.id },
+          "extract_facts outbox relay failed; row left unprocessed for retry",
+        );
+      }
+      continue;
+    }
+    const payload = row.payload as {
+      agentId?: string;
+      trigger?: string;
+      context?: unknown;
+    };
     if (!payload.agentId) {
-      getLogger().warn({ outboxId: row.id, eventType: row.eventType }, "outbox row missing agentId; skipping");
-      await prisma.outboxEvent.update({ where: { id: row.id }, data: { processedAt: new Date() } });
+      getLogger().warn(
+        { outboxId: row.id, eventType: row.eventType },
+        "outbox row missing agentId; skipping",
+      );
+      await prisma.outboxEvent.update({
+        where: { id: row.id },
+        data: { processedAt: new Date() },
+      });
       continue;
     }
     try {
       await queue.add(
         "execute",
-        { agentId: payload.agentId, trigger: payload.trigger ?? "user_message", context: payload.context },
+        {
+          agentId: payload.agentId,
+          trigger: payload.trigger ?? "user_message",
+          context: payload.context,
+        },
         { ...retryPolicy, jobId: `outbox-${row.id}` },
       );
-      await prisma.outboxEvent.update({ where: { id: row.id }, data: { processedAt: new Date() } });
+      await prisma.outboxEvent.update({
+        where: { id: row.id },
+        data: { processedAt: new Date() },
+      });
       enqueued += 1;
-      getLogger().info({ outboxId: row.id, agentId: payload.agentId }, "outbox row relayed to agent-jobs");
+      getLogger().info(
+        { outboxId: row.id, agentId: payload.agentId },
+        "outbox row relayed to agent-jobs",
+      );
     } catch (e) {
-      getLogger().error({ err: e, outboxId: row.id }, "outbox relay failed; row left unprocessed for retry");
+      getLogger().error(
+        { err: e, outboxId: row.id },
+        "outbox relay failed; row left unprocessed for retry",
+      );
     }
   }
   return enqueued;

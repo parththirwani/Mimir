@@ -64,12 +64,3 @@ export const FACT_RRF_K = 60;
 // Hard cap on facts injected into reply context after relation expansion —
 // relations can fan a top-K hit into many neighbors, so bound total injection.
 export const FACT_INJECT_CAP = 10;
-
-// Cosine-similarity floor before routing a same-subject fact pair to the
-// contradiction judge. The subject match is the real discriminator (different
-// things get different subjects); this is only a floor to avoid spending a judge
-// call on trivially orthogonal completions under one subject. Set LOW: facts are
-// short texts with naturally lower cosine sim than the long-document value
-// AGENT_DEDUP_THRESHOLD (0.85) was built for — a high bar silently skips real
-// contradictions ("rent $1200" -> "rent $1500" can sit well below 0.8).
-export const FACT_NEAR_THRESHOLD = 0.4;

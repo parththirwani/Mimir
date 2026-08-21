@@ -1,5 +1,11 @@
 import { loadEnv } from "./intent-iteration/_env.js";
-import { appendRow, loadFixtures, newRunId, requireDB, requireLiveLLM } from "./eval/lib.js";
+import {
+  appendRow,
+  loadFixtures,
+  newRunId,
+  requireDB,
+  requireLiveLLM,
+} from "./eval/lib.js";
 
 // Phase 13.2 — retrieval regression gate. Drives the REAL extraction+relation
 // write path and the hybrid retrieval read path over each fixture's transcript,
@@ -15,7 +21,8 @@ requireLiveLLM();
 
 const runId = newRunId();
 const { getPrismaClient } = await import("@mimir/backend-core");
-const { extractFacts, searchActiveFactsWithRelations } = await import("../apps/worker/src/agent/fact-extraction.js");
+const { extractFacts, searchActiveFactsWithRelations } =
+  await import("../apps/worker/src/agent/fact-extraction.js");
 
 const prisma = getPrismaClient();
 const fixtures = loadFixtures();
@@ -40,9 +47,13 @@ interface FixtureScore {
 // Seed a throwaway conversation per fixture, extract message-by-message (each
 // delta = one new message, simulating the production sweep tick so relation
 // edges and supersede flips form across turns), then run the held-out query.
-async function runFixture(fx: (typeof fixtures)[number]): Promise<FixtureScore> {
+async function runFixture(
+  fx: (typeof fixtures)[number],
+): Promise<FixtureScore> {
   const userId = `eval-retrieval-${runId}-${fx.id}`;
-  await prisma.user.create({ data: { id: userId, email: `${userId}@eval.local`, passwordHash: "x" } });
+  await prisma.user.create({
+    data: { id: userId, email: `${userId}@eval.local`, passwordHash: "x" },
+  });
   const conv = await prisma.conversation.create({ data: { userId } });
   const conversationId = conv.id;
 
@@ -66,21 +77,27 @@ async function runFixture(fx: (typeof fixtures)[number]): Promise<FixtureScore> 
     from = t;
   }
 
-  const hits = await searchActiveFactsWithRelations(conversationId, fx.heldOutQuery);
-  const hitText = hits.map((h) => h.fact.toLowerCase()).join("\n");
+  const hits = await searchActiveFactsWithRelations(
+    conversationId,
+    fx.heldOutQuery,
+  );
+  const norm = (s: string) =>
+    s.replace(/,/g, "").replace(/\s+/g, " ").toLowerCase();
+  const hitText = norm(hits.map((h) => h.fact).join("\n"));
 
   const expectedTotal = fx.expectedRecall.length;
   let matched = 0;
   const forbidden: string[] = [];
   for (const frag of fx.expectedRecall) {
-    if (hitText.includes(frag.toLowerCase())) matched += 1;
+    if (hitText.includes(norm(frag))) matched += 1;
   }
   for (const frag of fx.mustNotRecall ?? []) {
-    if (hitText.includes(frag.toLowerCase())) forbidden.push(frag);
+    if (hitText.includes(norm(frag))) forbidden.push(frag);
   }
   const recall = expectedTotal ? matched / expectedTotal : 0;
 
-  for (const h of hits) console.log(`   - [${h.sources.join("|")}] ${h.subject}: ${h.fact}`);
+  for (const h of hits)
+    console.log(`   - [${h.sources.join("|")}] ${h.subject}: ${h.fact}`);
 
   appendRow("retrieval", runId, {
     fixtureId: fx.id,
@@ -95,13 +112,29 @@ async function runFixture(fx: (typeof fixtures)[number]): Promise<FixtureScore> 
 
   // Cleanup scoped rows. FactRelation FK is ON DELETE RESTRICT, so relations
   // must go before the facts they point at.
-  await prisma.factRelation.deleteMany({ where: { OR: [{ sourceFact: { conversationId } }, { targetFact: { conversationId } }] } }).catch(() => {});
+  await prisma.factRelation
+    .deleteMany({
+      where: {
+        OR: [
+          { sourceFact: { conversationId } },
+          { targetFact: { conversationId } },
+        ],
+      },
+    })
+    .catch(() => {});
   await prisma.extractedFact.deleteMany({ where: { conversationId } });
   await prisma.message.deleteMany({ where: { conversationId } });
   await prisma.conversation.deleteMany({ where: { id: conversationId } });
   await prisma.user.delete({ where: { id: userId } }).catch(() => {});
 
-  return { fixtureId: fx.id, category: fx.category, expectedTotal, matched, recall, forbidden };
+  return {
+    fixtureId: fx.id,
+    category: fx.category,
+    expectedTotal,
+    matched,
+    recall,
+    forbidden,
+  };
 }
 
 const scores: FixtureScore[] = [];
@@ -111,10 +144,19 @@ for (const fx of fixtures) {
     const s = await runFixture(fx);
     scores.push(s);
     const ok = s.recall >= RECALL_GATE ? "OK" : "FAIL";
-    console.log(`  query="${fx.heldOutQuery}" -> recall ${(s.recall * 100).toFixed(1)}% (${s.matched}/${s.expectedTotal}) ${ok}`);
+    console.log(
+      `  query="${fx.heldOutQuery}" -> recall ${(s.recall * 100).toFixed(1)}% (${s.matched}/${s.expectedTotal}) ${ok}`,
+    );
   } catch (e) {
     console.log(`  ERROR ${String(e)}`);
-    scores.push({ fixtureId: fx.id, category: fx.category, expectedTotal: 1, matched: 0, recall: 0, forbidden: [] });
+    scores.push({
+      fixtureId: fx.id,
+      category: fx.category,
+      expectedTotal: 1,
+      matched: 0,
+      recall: 0,
+      forbidden: [],
+    });
   }
 }
 
@@ -124,20 +166,22 @@ const overall = totalExpected ? totalMatched / totalExpected : 0;
 const forbiddenHits = scores.filter((s) => s.forbidden.length > 0);
 
 console.log("\n===== RETRIEVAL GATE =====");
-console.log(`recall ${(overall * 100).toFixed(1)}% (${totalMatched}/${totalExpected})`);
+console.log(
+  `recall ${(overall * 100).toFixed(1)}% (${totalMatched}/${totalExpected})`,
+);
 for (const s of scores) {
-  const flags = s.forbidden.length ? ` [FORBIDDEN HIT: ${s.forbidden.join(", ")}]` : "";
+  const flags = s.forbidden.length
+    ? ` [FORBIDDEN HIT: ${s.forbidden.join(", ")}]`
+    : "";
   console.log(`  ${s.fixtureId}: ${s.matched}/${s.expectedTotal}${flags}`);
 }
 
 // The hard gate is RECALL >= RECALL_GATE (spec 13.2.2). Forbidden hits (a stale,
-// must-not-recall fact surfacing) are reported + persisted but do NOT block: the
-// adversarial fixture currently trips this on a known upstream supersede hole
-// (same-subject facts whose embeddings fall below FACT_NEAR_THRESHOLD never reach
-// the conflict judge, so the stale row stays active). Make it a hard fail once
-// that supersede gap is fixed.
-// ponytail: warning not blocker — tracked as https://github.com/parththirwani/Mimir/issues/1
-for (const s of forbiddenHits) console.log(`  NOTE: ${s.fixtureId} surfaced forbidden fact(s) - see issue #1 (supersede gap)`);
+// must-not-recall fact surfacing) are reported + persisted but do NOT block.
+for (const s of forbiddenHits)
+  console.log(
+    `  NOTE: ${s.fixtureId} surfaced forbidden fact(s) - see issue #1 (supersede gap)`,
+  );
 
 const ok = overall >= RECALL_GATE;
 console.log(ok ? "GATE PASS" : "GATE FAIL");

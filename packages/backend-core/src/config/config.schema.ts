@@ -47,6 +47,8 @@ export const configSchema = z.object({
   // Mail poll — fixed-cadence inbox sweep. Env override keeps the cost/latency
   // tradeoff tunable without a redeploy (default: every minute).
   MAIL_POLL_CRON: z.string().default("* * * * *"),
+  FACT_DARK_LAUNCH: z.coerce.boolean().default(false),
+  FACT_SWEEP_CRON: z.string().default("0 * * * *"),
   // Web Push: VAPID keys. Absent => push delivery is disabled and events
   // only reach users with a live socket (message stays in the thread otherwise).
   VAPID_PUBLIC_KEY: z.string().min(1).optional(),

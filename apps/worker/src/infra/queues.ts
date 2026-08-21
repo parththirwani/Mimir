@@ -1,6 +1,10 @@
 import { getConfig, getLogger, runWithContext } from "@mimir/backend-core";
 import { Queue, Worker, type Job, type JobsOptions } from "bullmq";
 import { executeAgent, executeOnce } from "../agent/agent-execution.js";
+import {
+  runStaleFactExtractionSweep,
+  runExtractForConversation,
+} from "../agent/fact-extraction-run.js";
 import { runDormancySweep } from "../agent/dormancy.js";
 import { sendEmailJob } from "../email/email-send-job.js";
 import { pollImportantMail } from "./mail-poll.js";
@@ -14,6 +18,7 @@ export const AGENT_TRIGGERS = "agent-triggers";
 export const WEBHOOK_PROCESSING = "webhook-processing";
 export const FAILED_AGENT_JOBS = "failed-agent-jobs";
 export const EMAIL_JOBS = "email-jobs";
+export const FACT_EXTRACTION = "fact-extraction";
 
 const cfg = getConfig();
 const connection = { url: cfg.REDIS_URL, maxRetriesPerRequest: null };
@@ -29,15 +34,27 @@ export const agentTriggers = new Queue(AGENT_TRIGGERS, { connection });
 export const webhookProcessing = new Queue(WEBHOOK_PROCESSING, { connection });
 export const failedAgentJobs = new Queue(FAILED_AGENT_JOBS, { connection });
 export const emailJobs = new Queue(EMAIL_JOBS, { connection });
+export const factExtractionJobs = new Queue(FACT_EXTRACTION, { connection });
 
 // The explicit `${provider}:${externalId}` job ID is the webhook idempotency
 // mechanism — never let BullMQ auto-generate an ID here.
-export function addWebhookJob(provider: string, externalId: string, webhookEventId: string): Promise<Job> {
-  return webhookProcessing.add("process", { webhookEventId }, { ...retryPolicy, jobId: `${provider}:${externalId}` });
+export function addWebhookJob(
+  provider: string,
+  externalId: string,
+  webhookEventId: string,
+): Promise<Job> {
+  return webhookProcessing.add(
+    "process",
+    { webhookEventId },
+    { ...retryPolicy, jobId: `${provider}:${externalId}` },
+  );
 }
 
 async function noop(job: Job): Promise<void> {
-  getLogger().info({ queue: job.queueName, id: job.id, data: job.data }, "job processed (no-op)");
+  getLogger().info(
+    { queue: job.queueName, id: job.id, data: job.data },
+    "job processed (no-op)",
+  );
 }
 
 // Daily repeatable job on agent-triggers; upsert is idempotent across restarts.
@@ -88,6 +105,13 @@ export async function scheduleConnectionCanary(): Promise<void> {
     { name: "connection-canary", data: { canary: true } },
   );
 }
+export async function scheduleFactExtractionSweep(): Promise<void> {
+  await agentTriggers.upsertJobScheduler(
+    "fact-extraction-sweep",
+    { pattern: cfg.FACT_SWEEP_CRON, immediately: false },
+    { name: "fact-extraction-sweep", data: { facts: true } },
+  );
+}
 
 // agent-triggers processor: dormancy + mail-poll sweeps are the only real jobs.
 // Exported so tests can exercise it on a throwaway queue (the real
@@ -109,9 +133,23 @@ export async function agentTriggerProcessor(job: Job): Promise<void> {
     case "connection-canary":
       await runConnectionCanary();
       return;
+    case "fact-extraction-sweep":
+      await runStaleFactExtractionSweep();
+      return;
     default:
       return noop(job);
   }
+}
+export async function factExtractionProcessor(job: Job): Promise<void> {
+  const { conversationId } = (job.data ?? {}) as { conversationId?: string };
+  if (!conversationId) {
+    getLogger().warn(
+      { id: job.id },
+      "fact-extraction job missing conversationId",
+    );
+    return;
+  }
+  await runExtractForConversation(conversationId, "message");
 }
 
 export function wireDlq<D, R, N extends string>(worker: Worker<D, R, N>): void {
@@ -119,24 +157,37 @@ export function wireDlq<D, R, N extends string>(worker: Worker<D, R, N>): void {
     // Guard against non-terminal 'failed' emissions (if any): only move a job
     // to the DLQ once its retries are actually exhausted.
     if (!job || job.attemptsMade < (job.opts.attempts ?? 1)) return;
-    failedAgentJobs.add("failed", {
-      queue: worker.name,
-      jobId: job.id,
-      data: job.data,
-      error: String(err),
-      failedAt: new Date().toISOString(),
-    }).catch((addErr) => getLogger().error({ queue: worker.name, id: job.id, addErr }, "failed to move job to DLQ"));
-    getLogger().error({ queue: worker.name, id: job.id, err }, "job exhausted retries, moved to DLQ");
+    failedAgentJobs
+      .add("failed", {
+        queue: worker.name,
+        jobId: job.id,
+        data: job.data,
+        error: String(err),
+        failedAt: new Date().toISOString(),
+      })
+      .catch((addErr) =>
+        getLogger().error(
+          { queue: worker.name, id: job.id, addErr },
+          "failed to move job to DLQ",
+        ),
+      );
+    getLogger().error(
+      { queue: worker.name, id: job.id, err },
+      "job exhausted retries, moved to DLQ",
+    );
   });
 }
 
 export function startWorkers(): Worker[] {
-  const registrations: Array<[Queue, (job: Job) => Promise<unknown>, { concurrency?: number }]> = [
+  const registrations: Array<
+    [Queue, (job: Job) => Promise<unknown>, { concurrency?: number }]
+  > = [
     [agentJobs, executeAgent, { concurrency: 10 }],
     [onceJobs, executeOnce, { concurrency: 10 }],
     [agentTriggers, agentTriggerProcessor, { concurrency: 20 }],
     [webhookProcessing, noop, {}],
     [emailJobs, sendEmailJob, { concurrency: 5 }],
+    [factExtractionJobs, factExtractionProcessor, { concurrency: 4 }],
   ];
 
   const workers: Worker[] = [];
@@ -149,7 +200,10 @@ export function startWorkers(): Worker[] {
           processor(job).then(resolve, reject);
         });
       });
-    const worker = new Worker(queue.name, withContext, { connection, ...workerOpts });
+    const worker = new Worker(queue.name, withContext, {
+      connection,
+      ...workerOpts,
+    });
     wireDlq(worker);
     workers.push(worker);
   }

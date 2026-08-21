@@ -31,18 +31,28 @@ beforeAll(async () => {
   });
   await prisma.conversation.create({ data: { id: convId, userId } });
   await prisma.agent.create({
-    data: { id: agentId, userId, ownerConversationId: convId, taskDescription: "test task" },
+    data: {
+      id: agentId,
+      userId,
+      ownerConversationId: convId,
+      taskDescription: "test task",
+    },
   });
 });
 
 afterAll(async () => {
   for (const id of enqueuedJobIds) {
-    const [agentJob, emailJob] = await Promise.all([agentJobs.getJob(id), emailJobs.getJob(id)]);
+    const [agentJob, emailJob] = await Promise.all([
+      agentJobs.getJob(id),
+      emailJobs.getJob(id),
+    ]);
     await agentJob?.remove();
     await emailJob?.remove();
   }
   await prisma.agent.deleteMany({ where: { id: agentId } });
-  await prisma.outboxEvent.deleteMany({ where: { payload: { path: ["agentId"], equals: agentId } } });
+  await prisma.outboxEvent.deleteMany({
+    where: { payload: { path: ["agentId"], equals: agentId } },
+  });
   await prisma.outboxEvent.deleteMany({ where: { eventType: "email_send" } });
   await prisma.conversation.deleteMany({ where: { id: convId } });
   await prisma.user.delete({ where: { id: userId } });
@@ -50,7 +60,11 @@ afterAll(async () => {
   await emailJobs.close();
 });
 
-async function poll<T>(fn: () => Promise<T>, ok: (t: T) => boolean, timeoutMs = 5000): Promise<T> {
+async function poll<T>(
+  fn: () => Promise<T>,
+  ok: (t: T) => boolean,
+  timeoutMs = 5000,
+): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const v = await fn();
@@ -63,7 +77,10 @@ async function poll<T>(fn: () => Promise<T>, ok: (t: T) => boolean, timeoutMs = 
 describe("outbox relay", () => {
   test("an unprocessed OutboxEvent row is enqueued to agent-jobs and marked processed", async () => {
     const row = await prisma.outboxEvent.create({
-      data: { eventType: "spawn_agent", payload: { agentId, trigger: "user_message" } },
+      data: {
+        eventType: "spawn_agent",
+        payload: { agentId, trigger: "user_message" },
+      },
     });
 
     const enqueued = await drainOutbox(agentJobs);
@@ -86,7 +103,9 @@ describe("outbox relay", () => {
     const enqueued = await drainOutbox(agentJobs);
 
     expect(enqueued).toBe(0);
-    const after = await prisma.outboxEvent.findUnique({ where: { id: row.id } });
+    const after = await prisma.outboxEvent.findUnique({
+      where: { id: row.id },
+    });
     expect(after?.processedAt).not.toBeNull();
   });
 
@@ -95,14 +114,24 @@ describe("outbox relay", () => {
     // but the BullMQ enqueue (Redis) fails. The row must survive unprocessed and
     // be drained once Redis is healthy — nothing is lost.
     const row = await prisma.outboxEvent.create({
-      data: { eventType: "spawn_agent", payload: { agentId, trigger: "user_message" } },
+      data: {
+        eventType: "spawn_agent",
+        payload: { agentId, trigger: "user_message" },
+      },
     });
 
-    const broken = { add: async () => { throw new Error("redis down (simulated)"); } } as unknown as Parameters<typeof drainOutbox>[0];
+    const broken = {
+      add: async () => {
+        throw new Error("redis down (simulated)");
+      },
+    } as unknown as Parameters<typeof drainOutbox>[0];
     const enqueuedDown = await drainOutbox(broken);
 
     expect(enqueuedDown).toBe(0);
-    expect((await prisma.outboxEvent.findUnique({ where: { id: row.id } }))?.processedAt).toBeNull();
+    expect(
+      (await prisma.outboxEvent.findUnique({ where: { id: row.id } }))
+        ?.processedAt,
+    ).toBeNull();
 
     const enqueued = await drainOutbox(agentJobs);
 
@@ -149,7 +178,11 @@ describe("outbox relay", () => {
     const onceJobs = new Queue(`once-${Date.now()}`, {
       connection: { url: process.env.REDIS_URL, maxRetriesPerRequest: null },
     });
-    const payload = { userId, conversationId: convId, content: "use the browser to check today's gold price" };
+    const payload = {
+      userId,
+      conversationId: convId,
+      content: "use the browser to check today's gold price",
+    };
     const row = await prisma.outboxEvent.create({
       data: { eventType: "one_shot", payload },
     });
@@ -165,5 +198,81 @@ describe("outbox relay", () => {
     expect(job?.data).toMatchObject(payload);
     await job?.remove();
     await onceJobs.close();
+  });
+
+  test("extract_facts coalescing: SAME window -> ONE job; a LATER window still gets a fresh job (no permanent jobId block)", async () => {
+    const factQueue = new Queue(`fact-${Date.now()}`, {
+      connection: { url: process.env.REDIS_URL, maxRetriesPerRequest: null },
+    });
+    const onceQueue = new Queue(`once-co-${Date.now()}`, {
+      connection: { url: process.env.REDIS_URL, maxRetriesPerRequest: null },
+    });
+    const conv = await prisma.conversation.create({
+      data: { id: `co-single-${Date.now()}`, userId },
+    });
+    const base = Date.now() - 120_000;
+    // Same minute for both -> same windowed jobId -> coalesce into ONE job.
+    const payload = {
+      conversationId: conv.id,
+      userId,
+      windowEnd: new Date(base).toISOString(),
+    };
+    const r1 = await prisma.outboxEvent.create({
+      data: { eventType: "extract_facts", payload },
+    });
+    const r2 = await prisma.outboxEvent.create({
+      data: { eventType: "extract_facts", payload },
+    });
+
+    await drainOutbox(agentJobs, emailJobs, onceQueue, factQueue);
+
+    await poll(
+      () =>
+        prisma.outboxEvent.count({
+          where: { id: { in: [r1.id, r2.id] }, processedAt: { not: null } },
+        }),
+      (c) => c === 2,
+    );
+    const jobId = `fact-${conv.id}-${Math.floor(base / 60_000)}`;
+    expect(await factQueue.getJob(jobId)).toBeTruthy();
+    expect(
+      (await factQueue.getJobs(["waiting", "active", "delayed"])).filter(
+        (j) => j.id === jobId,
+      ).length,
+    ).toBe(1);
+    await factQueue.getJob(jobId).then((j) => j?.remove());
+
+    // Later window (next minute) for the SAME conversation -> a DIFFERENT jobId,
+    // so a second burst AFTER the first completed still gets a fresh job. This is
+    // the regression the static `fact-<conversationId>` key would have hit (it
+    // would block forever on the completed job's retained ID).
+    const payload2 = {
+      conversationId: conv.id,
+      userId,
+      windowEnd: new Date(base + 60_000).toISOString(),
+    };
+    const r3 = await prisma.outboxEvent.create({
+      data: { eventType: "extract_facts", payload: payload2 },
+    });
+    await drainOutbox(agentJobs, emailJobs, onceQueue, factQueue);
+    await poll(
+      () =>
+        prisma.outboxEvent.count({
+          where: { id: { in: [r3.id] }, processedAt: { not: null } },
+        }),
+      (c) => c === 1,
+    );
+    const jobId2 = `fact-${conv.id}-${Math.floor((base + 60_000) / 60_000)}`;
+    expect(jobId2).not.toBe(jobId);
+    const job2 = await factQueue.getJob(jobId2);
+    expect(job2).toBeTruthy();
+    await job2?.remove();
+
+    await factQueue.close();
+    await onceQueue.close();
+    await prisma.outboxEvent.deleteMany({
+      where: { id: { in: [r1.id, r2.id, r3.id] } },
+    });
+    await prisma.conversation.delete({ where: { id: conv.id } });
   });
 });

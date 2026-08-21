@@ -57,6 +57,13 @@ model Conversation {
   userId    String
   user      User      @relation(fields: [userId], references: [id])
   createdAt DateTime  @default(now())
+  // Watermark for the fact-extraction write path: the newest message createdAt
+  // that has already been extracted. NULL = nothing extracted yet. Advanced only
+  // on a SUCCESSFUL extractFacts run, so a retry re-runs from the last good
+  // point (idempotent-ish against failures). All conversations that predate this
+  // column have NULL here, so the FIRST run on them backfills the whole thread —
+  // see the Task 13.7 design note on the one-time backlog burst.
+  lastExtractedAt DateTime?
   messages  Message[]
   summaries ConversationSummary[]
   facts     ExtractedFact[]

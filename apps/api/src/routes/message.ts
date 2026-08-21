@@ -53,7 +53,8 @@ const prisma = getPrismaClient();
 
 // Short stable hash of a system prompt, for the 10.7 context snapshot.
 // sha256 hex is a collision-safe enough oracle to diff prompt versions.
-const sha256 = (s: string): string => createHash("sha256").update(s).digest("hex");
+const sha256 = (s: string): string =>
+  createHash("sha256").update(s).digest("hex");
 
 const messageRouter: Router = Router();
 
@@ -68,13 +69,18 @@ export function lastNMessages<T>(messages: T[], n = 50): T[] {
 // (history.length === windowSize means the DB take was capped, i.e. the thread
 // actually has >= windowSize messages). Below that the full history is already in
 // context and a fact-retrieval call (embed + pgvector query) buys nothing.
-export function shouldFetchFacts(historyLength: number, windowSize = 50): boolean {
+export function shouldFetchFacts(
+  historyLength: number,
+  windowSize = 50,
+): boolean {
   return historyLength >= windowSize;
 }
 
 // Render retrieved facts as a system context block, or null when there's
 // nothing to inject (empty result / fail-open reads return []).
-export function factContextBlock(facts: { subject: string; fact: string }[]): string | null {
+export function factContextBlock(
+  facts: { subject: string; fact: string }[],
+): string | null {
   if (facts.length === 0) return null;
   return `Relevant facts from earlier in this thread:\n${facts.map((f) => `- ${f.subject}: ${f.fact}`).join("\n")}`;
 }
@@ -83,19 +89,31 @@ export function factContextBlock(facts: { subject: string; fact: string }[]): st
 messageRouter.post("/message", requireAuth, async (req, res) => {
   const userId = req.userId;
   if (!userId) {
-    res.status(401).json({ error: { code: "UNAUTHORIZED", message: "Not authenticated" } });
+    res
+      .status(401)
+      .json({ error: { code: "UNAUTHORIZED", message: "Not authenticated" } });
     return;
   }
   const parsed = messageSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Invalid message payload" } });
+    res
+      .status(400)
+      .json({
+        error: { code: "VALIDATION_ERROR", message: "Invalid message payload" },
+      });
     return;
   }
   const { conversationId, content, clientMessageId } = parsed.data;
 
-  const conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+  });
   if (!conversation || conversation.userId !== userId) {
-    res.status(404).json({ error: { code: "NOT_FOUND", message: "Conversation not found" } });
+    res
+      .status(404)
+      .json({
+        error: { code: "NOT_FOUND", message: "Conversation not found" },
+      });
     return;
   }
 
@@ -104,7 +122,9 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
   let isRetry = false;
   let existing: { id: string } | null = null;
   existing = await prisma.message.findUnique({
-    where: { conversationId_clientMessageId: { conversationId, clientMessageId } },
+    where: {
+      conversationId_clientMessageId: { conversationId, clientMessageId },
+    },
   });
   if (!existing) {
     try {
@@ -122,7 +142,9 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       if ((e as { code?: string }).code === "P2002") {
         isRetry = true;
         existing = await prisma.message.findUnique({
-          where: { conversationId_clientMessageId: { conversationId, clientMessageId } },
+          where: {
+            conversationId_clientMessageId: { conversationId, clientMessageId },
+          },
         });
         userMsg = existing;
       } else {
@@ -134,14 +156,24 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     userMsg = existing;
   }
   if (!userMsg) {
-    res.status(500).json({ error: { code: "INTERNAL_ERROR", message: "Failed to record message" } });
+    res
+      .status(500)
+      .json({
+        error: { code: "INTERNAL_ERROR", message: "Failed to record message" },
+      });
     return;
   }
   getLogger().info(
     { conversationId, clientMessageId, isRetry },
-    isRetry ? "user message replayed (idempotent hit)" : "user message recorded",
+    isRetry
+      ? "user message replayed (idempotent hit)"
+      : "user message recorded",
   );
-  await trackEvent(userId, "chat_message_sent", { conversationId, isRetry, contentLength: content.length });
+  await trackEvent(userId, "chat_message_sent", {
+    conversationId,
+    isRetry,
+    contentLength: content.length,
+  });
 
   // A completed retry returns the stored result without a second LLM call.
   if (isRetry) {
@@ -180,7 +212,11 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
   // interaction-agent classification decides confirm/cancel/ambiguous/unrelated.
   const pendingAction = await findPendingEmailAction(conversationId);
   if (pendingAction) {
-    const resolved = await resolvePendingAction(userId, content, pendingAction.draft);
+    const resolved = await resolvePendingAction(
+      userId,
+      content,
+      pendingAction.draft,
+    );
     let replyContent: string;
     if (resolved.intent === "confirm") {
       // Async send: the acknowledgment returns immediately, the actual Gmail
@@ -224,24 +260,50 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
         to: pendingAction.draft.to,
         subject: pendingAction.draft.subject,
       });
-      replyContent = "Cancelled — the email stays in your Gmail drafts if you want to edit it there.";
+      replyContent =
+        "Cancelled — the email stays in your Gmail drafts if you want to edit it there.";
     } else if (resolved.intent === "edit" && resolved.draft) {
       // The user is changing a mail detail (recipient/subject/body), not
       // deciding to send. Validate, re-draft, and re-show the updated email for
       // confirmation instead of forcing send/cancel.
       const d = resolved.draft;
-      let check: { ok: boolean; replyContent: string } = { ok: true, replyContent: "" };
+      let check: { ok: boolean; replyContent: string } = {
+        ok: true,
+        replyContent: "",
+      };
       if (!EMAIL_TO_RE.test(d.to) || !d.subject || !d.body) {
-        check = { ok: false, replyContent: "I still need a valid recipient and the full message — could you give me those?" };
-      } else if (d.subject.length > EMAIL_SUBJECT_MAX || d.body.length > EMAIL_BODY_MAX) {
-        check = { ok: false, replyContent: "That draft is too long. Could you shorten it?" };
+        check = {
+          ok: false,
+          replyContent:
+            "I still need a valid recipient and the full message — could you give me those?",
+        };
+      } else if (
+        d.subject.length > EMAIL_SUBJECT_MAX ||
+        d.body.length > EMAIL_BODY_MAX
+      ) {
+        check = {
+          ok: false,
+          replyContent: "That draft is too long. Could you shorten it?",
+        };
       }
       if (!check.ok) {
         const msg = await prisma.message.create({
-          data: { conversationId, role: "assistant", content: check.replyContent, status: "complete", parentMessageId: userMsg.id },
+          data: {
+            conversationId,
+            role: "assistant",
+            content: check.replyContent,
+            status: "complete",
+            parentMessageId: userMsg.id,
+          },
         });
         res.status(200).json({
-          message: { id: msg.id, conversationId, role: "assistant", content: msg.content, createdAt: msg.createdAt },
+          message: {
+            id: msg.id,
+            conversationId,
+            role: "assistant",
+            content: msg.content,
+            createdAt: msg.createdAt,
+          },
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
           latencyMs: 0,
         });
@@ -256,7 +318,11 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       });
       let draft;
       try {
-        draft = await createEmailDraft(userId, { to: d.to, subject: d.subject, body: d.body });
+        draft = await createEmailDraft(userId, {
+          to: d.to,
+          subject: d.subject,
+          body: d.body,
+        });
       } catch (e) {
         // Only the pending chat action was un-pended; the old Gmail draft is
         // still there, so a failed re-draft doesn't destroy the user's copy.
@@ -265,13 +331,20 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
           data: {
             conversationId,
             role: "assistant",
-            content: "I couldn't update that draft in Gmail right now. Try again in a moment.",
+            content:
+              "I couldn't update that draft in Gmail right now. Try again in a moment.",
             status: "complete",
             parentMessageId: userMsg.id,
           },
         });
         res.status(200).json({
-          message: { id: msg.id, conversationId, role: "assistant", content: msg.content, createdAt: msg.createdAt },
+          message: {
+            id: msg.id,
+            conversationId,
+            role: "assistant",
+            content: msg.content,
+            createdAt: msg.createdAt,
+          },
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
           latencyMs: 0,
         });
@@ -282,7 +355,10 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       // user-initiated cancel intentionally keeps its draft; only the draft
       // being edited away is removed here, and only once the replacement landed.
       await deleteEmailDraft(userId, pendingAction.draftId).catch((e) =>
-        getLogger().warn({ err: e, conversationId, draftId: pendingAction.draftId }, "failed to delete superseded gmail draft on edit"),
+        getLogger().warn(
+          { err: e, conversationId, draftId: pendingAction.draftId },
+          "failed to delete superseded gmail draft on edit",
+        ),
       );
       const draftText = `To: ${d.to}\nSubject: ${d.subject}\n\n${d.body}`;
       const msg = await prisma.message.create({
@@ -301,18 +377,31 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
         },
       });
       res.status(200).json({
-        message: { id: msg.id, conversationId, role: "assistant", content: msg.content, createdAt: msg.createdAt },
+        message: {
+          id: msg.id,
+          conversationId,
+          role: "assistant",
+          content: msg.content,
+          createdAt: msg.createdAt,
+        },
         usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
         latencyMs: 0,
       });
       return;
     } else if (resolved.intent === "ambiguous") {
-      replyContent = "Should I send the draft or cancel it? Reply **send** to send it, or **cancel** to keep it as a draft.";
+      replyContent =
+        "Should I send the draft or cancel it? Reply **send** to send it, or **cancel** to keep it as a draft.";
     } else {
       replyContent = `There's a pending email draft to ${pendingAction.draft.to} ("${pendingAction.draft.subject}"). Resolve it first — reply **send** to send it, or **cancel** to keep it as a draft.`;
     }
     const reply = await prisma.message.create({
-      data: { conversationId, role: "assistant", content: replyContent, status: "complete", parentMessageId: userMsg.id },
+      data: {
+        conversationId,
+        role: "assistant",
+        content: replyContent,
+        status: "complete",
+        parentMessageId: userMsg.id,
+      },
     });
     res.status(200).json({
       message: {
@@ -336,7 +425,11 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
   // user's actual message falls through to normal processing below.
   const pendingAgentDraft = await findPendingAgentDraft(conversationId);
   if (pendingAgentDraft) {
-    const intent = await resolveAgentDraft(userId, content, pendingAgentDraft.actionLabel);
+    const intent = await resolveAgentDraft(
+      userId,
+      content,
+      pendingAgentDraft.actionLabel,
+    );
     if (intent !== "unrelated") {
       let replyContent: string;
       if (intent === "confirm") {
@@ -350,7 +443,9 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
             },
           },
         });
-        await markAgentDraft(pendingAgentDraft.messageId, "executed", { confirmedAt: new Date().toISOString() });
+        await markAgentDraft(pendingAgentDraft.messageId, "executed", {
+          confirmedAt: new Date().toISOString(),
+        });
         await trackEvent(userId, "agent_draft_confirmed", {
           conversationId,
           agentId: pendingAgentDraft.agentId,
@@ -360,7 +455,8 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
           conversationId,
           parentMessageId: userMsg.id,
           kind: "agent_draft_confirm",
-          context: pendingAgentDraft.actionLabel ?? "act on the confirmed draft",
+          context:
+            pendingAgentDraft.actionLabel ?? "act on the confirmed draft",
         });
         res.status(200).json(ack);
         return;
@@ -372,10 +468,17 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
         });
         replyContent = "Cancelled — I'll leave that draft as-is.";
       } else {
-        replyContent = "There's a pending draft waiting for your call. Reply **yes** to proceed, or **no** to cancel it.";
+        replyContent =
+          "There's a pending draft waiting for your call. Reply **yes** to proceed, or **no** to cancel it.";
       }
       const reply = await prisma.message.create({
-        data: { conversationId, role: "assistant", content: replyContent, status: "complete", parentMessageId: userMsg.id },
+        data: {
+          conversationId,
+          role: "assistant",
+          content: replyContent,
+          status: "complete",
+          parentMessageId: userMsg.id,
+        },
       });
       res.status(200).json({
         message: {
@@ -399,7 +502,10 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     orderBy: { createdAt: "desc" },
     take: 50,
   });
-  const messages = lastNMessages(history).map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+  const messages = lastNMessages(history).map((m) => ({
+    role: m.role as "user" | "assistant",
+    content: m.content,
+  }));
 
   // Email write/send requests run BEFORE the interaction-agent classification so
   // "send an email to X" is never captured by spawn_agent (execution agents stay
@@ -411,7 +517,11 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     // the model never promises to send while disconnected. The connect prompt is
     // only ever written after this real (Nango-reconciled) state check.
     const gmailConnected = await isGmailConnected(userId);
-    const proposal = await proposeEmailAction(userId, [...messages, { role: "user", content }], gmailConnected ? "connected" : "not_connected");
+    const proposal = await proposeEmailAction(
+      userId,
+      [...messages, { role: "user", content }],
+      gmailConnected ? "connected" : "not_connected",
+    );
     if (proposal.intent === "send_email") {
       // A real send needs Gmail — short-circuit to a connect prompt (with an
       // in-chat Connect button) before drafting.
@@ -420,48 +530,76 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
           data: {
             conversationId,
             role: "assistant",
-            content: "Connect Gmail first, then I can write and send email for you.",
+            content:
+              "Connect Gmail first, then I can write and send email for you.",
             status: "complete",
             parentMessageId: userMsg.id,
             toolCalls: { type: "gmail.connect", status: "pending" },
           },
         });
         res.status(200).json({
-          message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+          message: {
+            id: reply.id,
+            conversationId,
+            role: "assistant",
+            content: reply.content,
+            createdAt: reply.createdAt,
+          },
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
           latencyMs: 0,
         });
         return;
       }
-      if (!EMAIL_TO_RE.test(proposal.to) || !proposal.subject || !proposal.body) {
+      if (
+        !EMAIL_TO_RE.test(proposal.to) ||
+        !proposal.subject ||
+        !proposal.body
+      ) {
         const reply = await prisma.message.create({
           data: {
             conversationId,
             role: "assistant",
-            content: "I need a recipient email address and the full message to draft that for you. Could you tell me who to send it to and what to say?",
+            content:
+              "I need a recipient email address and the full message to draft that for you. Could you tell me who to send it to and what to say?",
             status: "complete",
             parentMessageId: userMsg.id,
           },
         });
         res.status(200).json({
-          message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+          message: {
+            id: reply.id,
+            conversationId,
+            role: "assistant",
+            content: reply.content,
+            createdAt: reply.createdAt,
+          },
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
           latencyMs: 0,
         });
         return;
       }
-      if (proposal.subject.length > EMAIL_SUBJECT_MAX || proposal.body.length > EMAIL_BODY_MAX) {
+      if (
+        proposal.subject.length > EMAIL_SUBJECT_MAX ||
+        proposal.body.length > EMAIL_BODY_MAX
+      ) {
         const reply = await prisma.message.create({
           data: {
             conversationId,
             role: "assistant",
-            content: "That draft is too long to send. Could you shorten it and ask again?",
+            content:
+              "That draft is too long to send. Could you shorten it and ask again?",
             status: "complete",
             parentMessageId: userMsg.id,
           },
         });
         res.status(200).json({
-          message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+          message: {
+            id: reply.id,
+            conversationId,
+            role: "assistant",
+            content: reply.content,
+            createdAt: reply.createdAt,
+          },
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
           latencyMs: 0,
         });
@@ -479,23 +617,37 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       });
       let draft: { draftId: string; messageId: string };
       try {
-        draft = await createEmailDraft(userId, { to: proposal.to, subject: proposal.subject, body: proposal.body });
+        draft = await createEmailDraft(userId, {
+          to: proposal.to,
+          subject: proposal.subject,
+          body: proposal.body,
+        });
       } catch (e) {
         if (e instanceof ConnectionError) {
-          getLogger().warn({ err: e }, "email draft blocked by expired gmail token");
+          getLogger().warn(
+            { err: e },
+            "email draft blocked by expired gmail token",
+          );
           await markGmailExpired(userId);
           const reply = await prisma.message.create({
             data: {
               conversationId,
               role: "assistant",
-              content: "Your Gmail connection expired. Reconnect Gmail, then ask me to draft that again.",
+              content:
+                "Your Gmail connection expired. Reconnect Gmail, then ask me to draft that again.",
               status: "complete",
               parentMessageId: userMsg.id,
               toolCalls: { type: "gmail.connect", status: "pending" },
             },
           });
           res.status(200).json({
-            message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+            message: {
+              id: reply.id,
+              conversationId,
+              role: "assistant",
+              content: reply.content,
+              createdAt: reply.createdAt,
+            },
             usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
             latencyMs: 0,
           });
@@ -506,13 +658,20 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
           data: {
             conversationId,
             role: "assistant",
-            content: "I couldn't create that draft in Gmail right now. Try again in a moment.",
+            content:
+              "I couldn't create that draft in Gmail right now. Try again in a moment.",
             status: "complete",
             parentMessageId: userMsg.id,
           },
         });
         res.status(200).json({
-          message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+          message: {
+            id: reply.id,
+            conversationId,
+            role: "assistant",
+            content: reply.content,
+            createdAt: reply.createdAt,
+          },
           usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
           latencyMs: 0,
         });
@@ -536,12 +695,22 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
             type: EMAIL_ACTION_TYPE,
             status: "pending",
             draftId: draft.draftId,
-            draft: { to: proposal.to, subject: proposal.subject, body: proposal.body },
+            draft: {
+              to: proposal.to,
+              subject: proposal.subject,
+              body: proposal.body,
+            },
           },
         },
       });
       res.status(200).json({
-        message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+        message: {
+          id: reply.id,
+          conversationId,
+          role: "assistant",
+          content: reply.content,
+          createdAt: reply.createdAt,
+        },
         usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
         latencyMs: 0,
       });
@@ -555,25 +724,48 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
   // self-contained query FIRST so anaphora ("look it up", "that thing") and
   // corrections route correctly.
   const rewritten = await rewriteQuery(userId, messages, content);
-  await trackEvent(userId, "query_rewritten", { conversationId, rewritten, reworded: rewritten !== content });
-  const classification = await classifyMessage(userId, rewritten, await listActiveAgents(userId));
+  await trackEvent(userId, "query_rewritten", {
+    conversationId,
+    rewritten,
+    reworded: rewritten !== content,
+  });
+  const classification = await classifyMessage(
+    userId,
+    rewritten,
+    await listActiveAgents(userId),
+  );
 
   // --- Management: cancel/forget/delete ---
   // A stop/cancel/forget/negation request archives the matching active Agent(s)
   // and disables their Triggers — it must NEVER become a retarget/resume. The
   // classifier guarantees no targetAgentId for manage_cancel.
   if (classification.action === "manage_cancel") {
-    await trackEvent(userId, "agent_manage_cancel_classified", { conversationId, targetHint: classification.targetHint ?? null });
+    await trackEvent(userId, "agent_manage_cancel_classified", {
+      conversationId,
+      targetHint: classification.targetHint ?? null,
+    });
     const { archived } = await archiveAgents(userId, classification.targetHint);
     const replyContent =
       archived.length > 0
         ? "Done — I've stopped that."
         : "There's nothing matching that to stop right now.";
     const reply = await prisma.message.create({
-      data: { conversationId, role: "assistant", content: replyContent, status: "complete", parentMessageId: userMsg.id },
+      data: {
+        conversationId,
+        role: "assistant",
+        content: replyContent,
+        status: "complete",
+        parentMessageId: userMsg.id,
+      },
     });
     res.status(200).json({
-      message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+      message: {
+        id: reply.id,
+        conversationId,
+        role: "assistant",
+        content: reply.content,
+        createdAt: reply.createdAt,
+      },
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       latencyMs: 0,
     });
@@ -582,14 +774,28 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
 
   // --- Management: list active watches/triggers ---
   if (classification.action === "manage_list") {
-    await trackEvent(userId, "agent_manage_list_classified", { conversationId });
+    await trackEvent(userId, "agent_manage_list_classified", {
+      conversationId,
+    });
     const agents = await listActiveWithTriggers(userId);
     if (agents.length === 0) {
       const reply = await prisma.message.create({
-        data: { conversationId, role: "assistant", content: "Nothing active right now.", status: "complete", parentMessageId: userMsg.id },
+        data: {
+          conversationId,
+          role: "assistant",
+          content: "Nothing active right now.",
+          status: "complete",
+          parentMessageId: userMsg.id,
+        },
       });
       res.status(200).json({
-        message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+        message: {
+          id: reply.id,
+          conversationId,
+          role: "assistant",
+          content: reply.content,
+          createdAt: reply.createdAt,
+        },
         usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
         latencyMs: 0,
       });
@@ -601,10 +807,22 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     });
     const replyContent = lines.join("\n");
     const reply = await prisma.message.create({
-      data: { conversationId, role: "assistant", content: replyContent, status: "complete", parentMessageId: userMsg.id },
+      data: {
+        conversationId,
+        role: "assistant",
+        content: replyContent,
+        status: "complete",
+        parentMessageId: userMsg.id,
+      },
     });
     res.status(200).json({
-      message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+      message: {
+        id: reply.id,
+        conversationId,
+        role: "assistant",
+        content: reply.content,
+        createdAt: reply.createdAt,
+      },
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       latencyMs: 0,
     });
@@ -618,13 +836,20 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       data: {
         conversationId,
         role: "assistant",
-        content: "Could you be a bit more specific about what you'd like me to do? I didn't want to set anything up until you confirm.",
+        content:
+          "Could you be a bit more specific about what you'd like me to do? I didn't want to set anything up until you confirm.",
         status: "complete",
         parentMessageId: userMsg.id,
       },
     });
     res.status(200).json({
-      message: { id: reply.id, conversationId, role: "assistant", content: reply.content, createdAt: reply.createdAt },
+      message: {
+        id: reply.id,
+        conversationId,
+        role: "assistant",
+        content: reply.content,
+        createdAt: reply.createdAt,
+      },
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       latencyMs: 0,
     });
@@ -636,11 +861,20 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
   // delegated to the agent-once queue — the worker answers with the tools and
   // creates NO Agent. The rewritten query (anaphora resolved) is what runs.
   if (classification.action === "one_shot") {
-    await trackEvent(userId, "agent_one_shot_classified", { conversationId, confidence: classification.confidence, complexity: classification.complexity });
+    await trackEvent(userId, "agent_one_shot_classified", {
+      conversationId,
+      confidence: classification.confidence,
+      complexity: classification.complexity,
+    });
     await prisma.outboxEvent.create({
       data: {
         eventType: "one_shot",
-        payload: { userId, conversationId, content: rewritten, complexity: classification.complexity },
+        payload: {
+          userId,
+          conversationId,
+          content: rewritten,
+          complexity: classification.complexity,
+        },
       },
     });
     getLogger().info({ conversationId }, "one-shot query delegated via outbox");
@@ -655,7 +889,10 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     return;
   }
 
-  if (classification.action === "spawn_agent" && classification.taskDescription) {
+  if (
+    classification.action === "spawn_agent" &&
+    classification.taskDescription
+  ) {
     await trackEvent(userId, "agent_spawn_classified", {
       conversationId,
       confidence: classification.confidence,
@@ -672,10 +909,17 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
         await prisma.outboxEvent.create({
           data: {
             eventType: "retarget_agent",
-            payload: { agentId: target.id, trigger: "user_message", context: content },
+            payload: {
+              agentId: target.id,
+              trigger: "user_message",
+              context: content,
+            },
           },
         });
-        getLogger().info({ agentId: target.id, conversationId }, "existing agent retargeted via outbox");
+        getLogger().info(
+          { agentId: target.id, conversationId },
+          "existing agent retargeted via outbox",
+        );
         const ack = await writeAck({
           userId,
           conversationId,
@@ -688,7 +932,10 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       }
     }
 
-    const { duplicate, embedding: dedupEmbedding } = await findDuplicateAgent(userId, classification.taskDescription);
+    const { duplicate, embedding: dedupEmbedding } = await findDuplicateAgent(
+      userId,
+      classification.taskDescription,
+    );
     if (duplicate) {
       // A functional dedup question, not a work ack — kept fixed so the choice is
       // unambiguous.
@@ -701,7 +948,10 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
           parentMessageId: userMsg.id,
         },
       });
-      getLogger().info({ conversationId, duplicate: true }, "agent spawn acknowledged (duplicate)");
+      getLogger().info(
+        { conversationId, duplicate: true },
+        "agent spawn acknowledged (duplicate)",
+      );
       res.status(200).json({
         message: {
           id: reply.id,
@@ -724,9 +974,14 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       try {
         embedding = await embedTask(classification.taskDescription);
       } catch (e) {
-        getLogger().error({ err: e }, "embedding failed; refusing to spawn agent");
+        getLogger().error(
+          { err: e },
+          "embedding failed; refusing to spawn agent",
+        );
         const mapped = mapLLMError(e);
-        res.status(mapped.status).json({ error: { code: mapped.code, message: mapped.message } });
+        res
+          .status(mapped.status)
+          .json({ error: { code: mapped.code, message: mapped.message } });
         return;
       }
     }
@@ -741,7 +996,11 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     await trackEvent(userId, "agent_spawned", { conversationId, agentId });
     // Cheap-model trigger extraction: an implicit "watch-for" condition
     // gets its own Trigger row so the 1-min tick can fire the agent.
-    const triggerProposal = await classifyTrigger(userId, content, classification.taskDescription);
+    const triggerProposal = await classifyTrigger(
+      userId,
+      content,
+      classification.taskDescription,
+    );
     if (triggerProposal.hasTrigger && triggerProposal.criteria) {
       await prisma.trigger.create({
         data: {
@@ -750,7 +1009,10 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
           criteria: triggerProposal.criteria,
         },
       });
-      await trackEvent(userId, "agent_trigger_created", { conversationId, agentId });
+      await trackEvent(userId, "agent_trigger_created", {
+        conversationId,
+        agentId,
+      });
     }
     getLogger().info({ agentId, conversationId }, "agent spawned via outbox");
     const ack = await writeAck({
@@ -760,7 +1022,10 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
       kind: "spawn",
       context: `start watching: ${classification.taskDescription}`,
     });
-    getLogger().info({ conversationId, duplicate: false }, "agent spawn acknowledged");
+    getLogger().info(
+      { conversationId, duplicate: false },
+      "agent spawn acknowledged",
+    );
     res.status(200).json(ack);
     return;
   }
@@ -786,18 +1051,32 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     // 10.7 context snapshot: system prompt hash + what was injected (facts)
     // and the message window that formed the reply context.
     sendSystemPromptHash = `sha256:${sha256(chatSystemPrompt())}`;
-    sendInjectedBlocks = factBlock ? [{ type: "facts", refIds: facts.map((f) => f.id) }] : undefined;
+    sendInjectedBlocks = factBlock
+      ? [{ type: "facts", refIds: facts.map((f) => f.id) }]
+      : undefined;
     sendMessageWindow = [...history].reverse().map((m) => m.id);
-    result = await callOpenRouter([{ role: "system", content: chatSystemPrompt() }, ...replyContext], { useCase: "chat_response" });
+    result = await callOpenRouter(
+      [{ role: "system", content: chatSystemPrompt() }, ...replyContext],
+      { useCase: "chat_response" },
+    );
   } catch (e) {
     getLogger().error({ err: e }, "openrouter call failed");
     await prisma.message.update({
       where: { id: userMsg.id },
-      data: { status: "failed", errorDetail: { message: mapLLMError(e).message } },
+      data: {
+        status: "failed",
+        errorDetail: { message: mapLLMError(e).message },
+      },
     });
     const mapped = mapLLMError(e);
-    await trackModelCall({ userId, useCase: "chat_response", error: mapped.message });
-    res.status(mapped.status).json({ error: { code: mapped.code, message: mapped.message } });
+    await trackModelCall({
+      userId,
+      useCase: "chat_response",
+      error: mapped.message,
+    });
+    res
+      .status(mapped.status)
+      .json({ error: { code: mapped.code, message: mapped.message } });
     return;
   }
   const logId = await trackModelCall({
@@ -833,7 +1112,11 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
   });
 
   getLogger().info(
-    { conversationId, tokens: result.usage.totalTokens, latencyMs: result.latencyMs },
+    {
+      conversationId,
+      tokens: result.usage.totalTokens,
+      latencyMs: result.latencyMs,
+    },
     "assistant reply written",
   );
   await trackEvent(userId, "chat_message_reply", {
@@ -861,13 +1144,41 @@ messageRouter.post("/message", requireAuth, async (req, res) => {
     },
     latencyMs: result.latencyMs,
   });
+
+  // 13.7 — fire-and-forget fact extraction, AFTER the reply is sent.
+  // Enqueue an outbox row (crash-safe; the worker relays it to the
+  // fact-extraction BullMQ queue with retry/DLQ). Gated on the same >=windowSize
+  // threshold as the read path so short throwaway threads skip the extraction
+  // cost. The watermark on the conversation advances only after the worker's
+  // successful write run, so a dropped/failed job is re-run by the stale sweep.
+  if (shouldFetchFacts(history.length)) {
+    await prisma.outboxEvent
+      .create({
+        data: {
+          eventType: "extract_facts",
+          payload: {
+            conversationId,
+            userId,
+            windowEnd: new Date().toISOString(),
+          },
+        },
+      })
+      .catch((e) =>
+        getLogger().error(
+          { err: e, conversationId },
+          "failed to enqueue extract_facts outbox row",
+        ),
+      );
+  }
 });
 
 // GET /api/v1/conversation — single persistent thread (find-or-create).
 messageRouter.get("/conversation", requireAuth, async (req, res) => {
   const userId = req.userId;
   if (!userId) {
-    res.status(401).json({ error: { code: "UNAUTHORIZED", message: "Not authenticated" } });
+    res
+      .status(401)
+      .json({ error: { code: "UNAUTHORIZED", message: "Not authenticated" } });
     return;
   }
   let conversation = await prisma.conversation.findFirst({ where: { userId } });
@@ -878,20 +1189,26 @@ messageRouter.get("/conversation", requireAuth, async (req, res) => {
     where: { conversationId: conversation.id },
     orderBy: { createdAt: "asc" },
   });
-  getLogger().info({ conversationId: conversation.id, messageCount: messages.length }, "conversation loaded");
+  getLogger().info(
+    { conversationId: conversation.id, messageCount: messages.length },
+    "conversation loaded",
+  );
   res.json({
-    conversation: { id: conversation.id, messages: messages.map((m) => ({
-      id: m.id,
-      conversationId: m.conversationId,
-      role: m.role,
-      content: m.content,
-      createdAt: m.createdAt,
-      promptTokens: m.promptTokens,
-      completionTokens: m.completionTokens,
-      totalTokens: m.tokenCount,
-      durationMs: m.durationMs,
-      toolCalls: m.toolCalls ?? null,
-    })) },
+    conversation: {
+      id: conversation.id,
+      messages: messages.map((m) => ({
+        id: m.id,
+        conversationId: m.conversationId,
+        role: m.role,
+        content: m.content,
+        createdAt: m.createdAt,
+        promptTokens: m.promptTokens,
+        completionTokens: m.completionTokens,
+        totalTokens: m.tokenCount,
+        durationMs: m.durationMs,
+        toolCalls: m.toolCalls ?? null,
+      })),
+    },
   });
 });
 
